@@ -153,6 +153,13 @@ func handler(states ...*schedulerState) http.Handler {
 		}
 		jsonResponse(w, 200, status(c, states...))
 	})
+	mux.HandleFunc("/api/v1/apps", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			apiError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		jsonResponse(w, http.StatusOK, openApps())
+	})
 	mux.HandleFunc("/api/v1/diagnostics", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			apiError(w, 405, "method not allowed")
