@@ -1,64 +1,62 @@
-# nudge
+# Nudge
 
-Nudge sends lightweight desktop reminders on Fedora/Niri using `notify-send`. Focused app IDs come from Niri IPC. It uses only the Go standard library.
+Nudge is a local, app-aware reminder daemon for Niri on Linux. It uses `notify-send` for desktop notifications, stores its configuration as JSON, and serves a browser dashboard at **http://127.0.0.1:8788**. There is no cloud service or Node.js runtime dependency in the built executable.
 
-## Install
+## Build and run
 
-Requirements: Go, Niri, `notify-send` (`libnotify`), SwayNC (or another notification daemon), and a logged-in Wayland session.
-
-From this checkout:
+Requirements: Go 1.23 or newer, Node.js 20.19+ or 22.12+ and npm for building the dashboard; Niri and `notify-send` for desktop integration. On Fedora, install the packages providing `niri` and `notify-send` for your session. Node is not needed to run the compiled program.
 
 ```sh
-go test ./...
+cd frontend
+npm ci
+npm run check && npm run lint && npm run build
+cd ..
+go test -race ./...
 go build -o nudge .
-install -Dm755 nudge ~/.local/bin/nudge
-install -Dm644 nudge.service ~/.config/systemd/user/nudge.service
-mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/nudge"
-# Copy the example only if you do not already have a config:
-if [ ! -e "${XDG_CONFIG_HOME:-$HOME/.config}/nudge/config.json" ]; then
-  install -m600 config.example.json "${XDG_CONFIG_HOME:-$HOME/.config}/nudge/config.json"
-fi
-systemctl --user daemon-reload
-systemctl --user enable --now nudge.service
+./nudge daemon
 ```
 
-Installation leaves an existing config untouched. The daemon rereads it every five seconds, so CLI additions, pause, and resume apply without a restart.
+Open the URL above. The dashboard is served only on IPv4 loopback; if the port is already occupied, the daemon logs the error and continues scheduling without the dashboard. Configuration defaults to `$XDG_CONFIG_HOME/nudge/config.json` or `~/.config/nudge/config.json`. Existing Nudge JSON configurations are accepted. Writes use an atomic rename and a lock shared by the CLI and daemon. Avoid editing the file while a Nudge command is writing it.
 
-## Commands
+The dashboard edits rules, the shared cooldown and quiet hours; changes are saved to the same configuration used by the CLI. Reminders continue when the browser is closed. Niri window events wake the scheduler; a five-second timer also checks due reminders and recovers from missed events. A watched app is reminded on focus and repeats during continuous focus. Periodic reminders run when due. A single cooldown applies across scheduled notifications. Pause and quiet hours suppress scheduling; quiet hours use local time and may cross midnight. `now` sends immediately and bypasses the scheduled cooldown and pause. Snooze is a temporary pause. Due times are estimates and may be delayed by the timer, cooldown, quiet hours or notification failure.
+
+## CLI
 
 ```sh
-nudge now "Are you being intentional?"        # send one notification now
-nudge inspect                                  # show focused Niri app_id and window title
+nudge now "Are you being intentional?"
 nudge every 30m "Stay focused on what matters."
-nudge watch --focused --every 15m              # watch the currently focused app
-nudge watch --focused --every 15m "Be intentional."
-nudge watch firefox --every 15m                # explicit app_id remains supported
+nudge watch firefox --every 15m "Be intentional."
+nudge watch --focused --every 15m
+nudge inspect
 nudge pause 1h
+nudge snooze 15m
 nudge resume
 nudge status
 nudge list
+nudge config
+nudge diagnostics
+nudge web
+nudge version
 ```
 
-`inspect` prints the current focused app ID and title. If no window is focused, it reports that; if Niri IPC is unavailable, it returns a diagnostic error. `watch --focused` records the focused window's app ID at command time, so focus the desired app before running it. It rejects missing/invalid app IDs without changing the config. Manual `watch APP_ID` continues to work. IDs are matched case-insensitively against Niri's exact `app_id`, not the title.
+Durations use Go syntax such as `30s`, `15m`, and `1h`. App IDs are case-insensitive exact Niri `app_id` matches; `nudge inspect` displays the current ID and title. `watch --focused` captures the app at command time. `config` and `diagnostics` produce JSON. `web` prints the dashboard URL; the daemon must already be running.
 
-A watch reminder fires when its app is observed gaining focus, repeats after its configured interval while focus remains there, and resets when focus leaves. Focus polling is every five seconds, so a transition may be noticed up to five seconds later. A shared cooldown (default `5m`) limits all scheduled notifications, including focus changes. If a notification is held by cooldown, it remains eligible while the watched app stays focused. `now` bypasses that scheduled cooldown. Pause suspends scheduled reminders; resuming while a watched app is focused starts a fresh session.
+## User service and migration
 
-`every` and `watch` append to `${XDG_CONFIG_HOME:-~/.config}/nudge/config.json`. Durations use Go syntax (`15m`, `1h`, `90s`). The example config includes the four default messages and an example Firefox watch. Edit JSON directly to change or remove reminders.
+The supplied `nudge.service` uses `~/.local/bin/nudge daemon`. Build and test before replacing an existing installation. Back up the existing binary, configuration, and service file first. With the user service stopped, install the new executable and service, then run `systemctl --user daemon-reload` and `systemctl --user enable --now nudge.service`. To roll back, stop the service, restore the backed-up binary and service definition, reload systemd, and start the service. Preserve the configuration backup separately: the old binary does not understand new quiet-hour or per-rule disabled fields and can discard them when writing configuration.
 
-## Notification troubleshooting
+The graphical session must supply `NIRI_SOCKET`, `XDG_RUNTIME_DIR`, and the session D-Bus environment to the user service. Check `systemctl --user status nudge.service` and `journalctl --user -u nudge.service -n 50` if it cannot connect.
 
-```sh
-notify-send --urgency=normal "Nudge test" "Normal urgency"
-notify-send --urgency=critical "Nudge test" "Critical urgency"
-nudge now "Nudge test"
-swaync-client --get-dnd
-niri msg --json focused-window
-```
+## API and development
 
-- Nudge uses normal urgency and respects the desktop notification daemon. A successful `notify-send`/`nudge now` exit means the D-Bus request was accepted; it does not prove a banner was shown.
-- If `swaync-client --get-dnd` prints `true`, SwayNC Do Not Disturb is on. SwayNC may suppress notification popups while DND is active. Turn it off through SwayNC only if that matches your preference; Nudge does not change DND or force critical urgency.
-- SwayNC's `timeout`, `timeout-low`, and `timeout-critical` control banner dismissal. A timeout of `0` means that urgency does not time out.
-- `nudge inspect` shows the current app ID; `watch --focused` avoids guessing it. For a manually configured watch, use the exact `app_id` from `niri msg --json focused-window`.
-- Check daemon status/logs with `systemctl --user status nudge.service` and `journalctl --user -u nudge.service -n 50 --no-pager`. The user systemd manager must retain `WAYLAND_DISPLAY`, `NIRI_SOCKET`, `XDG_RUNTIME_DIR`, and the session D-Bus address. Nudge requires the logged-in graphical session; lingering alone cannot provide it.
+The same process serves JSON endpoints: `GET /api/v1/status`, `GET /api/v1/config`, `PUT /api/v1/config`, `POST /api/v1/control`, and `GET /api/v1/diagnostics`. Control accepts `{"action":"pause","duration":"1h"}`, `snooze`, or `resume`. Mutations require `Content-Type: application/json` and `Origin: http://127.0.0.1:8788`; all requests require Host `127.0.0.1:8788`. Errors are JSON objects with an `error` string. There is no permissive CORS policy. The API is intended for the local dashboard, not remote access.
 
-Nudge intentionally does not bypass DND. Notifications accepted by D-Bus but hidden by SwayNC remain subject to the user's SwayNC preferences. Missed intervals are not replayed; a daemon restart creates a fresh app-focus session.
+For frontend development, run the daemon, then `cd frontend && npm run dev`. Vite proxies `/api` to the Go server. Run `npm run build` before `go build`: the production assets are embedded into the Go executable. The frontend uses Svelte 5, Vite, TypeScript, Tailwind CSS 4, a customized shadcn-svelte button, and Lucide icons. Dependencies and versions are locked in `frontend/package-lock.json`; fonts are bundled locally.
+
+## Troubleshooting
+
+- **Dashboard unavailable:** check the daemon log and whether another program owns port 8788. Use the exact `127.0.0.1` URL, not `localhost`.
+- **No notifications:** verify `notify-send` is installed, the user D-Bus session is available, and the notification daemon is running. A successful notification command only means the request was accepted; it does not prove a popup was visible. SwayNC Do Not Disturb can suppress popups.
+- **No focused app:** run `nudge inspect` in the graphical session and check the user service's Niri environment. A missing focused window is normal when none is focused.
+- **Configuration error:** run `nudge diagnostics` and inspect the JSON. Quiet-hour start and end must both be set in `HH:MM` format; durations must be positive.
+- **Next reminder shown as unavailable:** exact scheduling information is not currently exposed in the dashboard.

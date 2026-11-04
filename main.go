@@ -1,28 +1,34 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 )
 
 type Reminder struct {
-	Kind    string    `json:"kind"`
-	App     string    `json:"app,omitempty"`
-	Every   string    `json:"every"`
-	Message string    `json:"message"`
-	Last    time.Time `json:"last,omitempty"`
+	Kind     string    `json:"kind"`
+	App      string    `json:"app,omitempty"`
+	Every    string    `json:"every"`
+	Message  string    `json:"message"`
+	Disabled bool      `json:"disabled,omitempty"`
+	Last     time.Time `json:"last,omitempty"`
 }
 type Config struct {
 	Reminders        []Reminder `json:"reminders"`
 	PausedUntil      time.Time  `json:"paused_until,omitempty"`
 	Cooldown         string     `json:"cooldown,omitempty"`
+	QuietStart       string     `json:"quiet_start,omitempty"`
+	QuietEnd         string     `json:"quiet_end,omitempty"`
 	LastNotification time.Time  `json:"last_notification,omitempty"`
 }
 type focusedWindowInfo struct {
@@ -49,7 +55,7 @@ func load() (Config, string, error) {
 	}
 	b, e := os.ReadFile(p)
 	if errors.Is(e, os.ErrNotExist) {
-		return Config{Cooldown: "5m"}, p, nil
+		return Config{Cooldown: "5m", Reminders: []Reminder{}}, p, nil
 	}
 	if e != nil {
 		return Config{}, "", e
@@ -61,6 +67,9 @@ func load() (Config, string, error) {
 	if c.Cooldown == "" {
 		c.Cooldown = "5m"
 	}
+	if c.Reminders == nil {
+		c.Reminders = []Reminder{}
+	}
 	return c, p, nil
 }
 func save(c Config, p string) error {
@@ -71,11 +80,29 @@ func save(c Config, p string) error {
 	if e = os.MkdirAll(filepath.Dir(p), 0700); e != nil {
 		return e
 	}
-	tmp := p + ".tmp"
-	if e = os.WriteFile(tmp, append(b, '\n'), 0600); e != nil {
+	f, e := os.CreateTemp(filepath.Dir(p), ".config-*.tmp")
+	if e != nil {
 		return e
 	}
-	return os.Rename(tmp, p)
+	defer os.Remove(f.Name())
+	if _, e = f.Write(append(b, '\n')); e == nil {
+		e = f.Sync()
+	}
+	if closeErr := f.Close(); e == nil {
+		e = closeErr
+	}
+	if e != nil {
+		return e
+	}
+	if e = os.Rename(f.Name(), p); e != nil {
+		return e
+	}
+	dir, e := os.Open(filepath.Dir(p))
+	if e != nil {
+		return e
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 func duration(s string) (time.Duration, error) {
 	d, e := time.ParseDuration(s)
@@ -113,7 +140,9 @@ func notify(m string) error {
 	if _, e := exec.LookPath("notify-send"); e != nil {
 		return fmt.Errorf("notify-send is required: %w", e)
 	}
-	if e := exec.Command("notify-send", "Nudge", m).Run(); e != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if e := exec.CommandContext(ctx, "notify-send", "Nudge", m).Run(); e != nil {
 		return fmt.Errorf("send desktop notification: %w", e)
 	}
 	return nil
@@ -135,7 +164,9 @@ func validateAppID(id string) error {
 	return nil
 }
 func focusedWindow() (focusedWindowInfo, bool, error) {
-	b, err := exec.Command("niri", "msg", "--json", "focused-window").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	b, err := exec.CommandContext(ctx, "niri", "msg", "--json", "focused-window").Output()
 	if err != nil {
 		return focusedWindowInfo{}, false, fmt.Errorf("Niri IPC unavailable (niri msg --json focused-window): %w", err)
 	}
@@ -166,17 +197,55 @@ func runDaemon() error {
 	if e != nil {
 		return e
 	}
+	stopHTTP, err := startHTTP()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nudge: dashboard unavailable: %v\n", err)
+	} else {
+		defer stopHTTP()
+	}
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(stop)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	wake := make(chan struct{}, 1)
+	go watchNiri(ctx, wake)
 	sessions := map[int]watchSession{}
+	var previousRules string
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
-	for range t.C {
-		c, _, err := load()
+	for {
+		select {
+		case <-stop:
+			return nil
+		case <-t.C:
+		case <-wake:
+		}
+		unlock, err := lockConfig()
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "nudge: lock config: %v\n", err)
 			continue
 		}
-		if time.Now().Before(c.PausedUntil) {
-			sessions = map[int]watchSession{}
+		c, _, err := load()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nudge: load config: %v\n", err)
+			unlock()
 			continue
+		}
+		if time.Now().Before(c.PausedUntil) || inQuietHours(c, time.Now()) {
+			sessions = map[int]watchSession{}
+			unlock()
+			continue
+		}
+		rules := make([]Reminder, len(c.Reminders))
+		copy(rules, c.Reminders)
+		for i := range rules {
+			rules[i].Last = time.Time{}
+		}
+		rulesJSON, _ := json.Marshal(rules)
+		if string(rulesJSON) != previousRules {
+			sessions = map[int]watchSession{}
+			previousRules = string(rulesJSON)
 		}
 		now := time.Now()
 		app, _, _ := focusedWindow()
@@ -184,6 +253,10 @@ func runDaemon() error {
 		changed := false
 		for i := range c.Reminders {
 			r := &c.Reminders[i]
+			if r.Disabled {
+				delete(sessions, i)
+				continue
+			}
 			due := false
 			if r.Kind == "watch" {
 				s := sessions[i]
@@ -213,14 +286,24 @@ func runDaemon() error {
 			changed = true
 		}
 		if changed {
-			_ = save(c, p)
+			if err := save(c, p); err != nil {
+				fmt.Fprintf(os.Stderr, "nudge: save config: %v\n", err)
+			}
 		}
+		unlock()
 	}
-	return nil
 }
 func run(a []string) error {
 	if len(a) == 0 {
 		return errors.New("usage: nudge now MESSAGE | every DURATION MESSAGE | watch APP_ID --every DURATION | watch --focused --every DURATION | inspect | pause DURATION | resume | status | list | daemon")
+	}
+	if a[0] == "--version" || a[0] == "version" {
+		fmt.Println("nudge " + version)
+		return nil
+	}
+	if a[0] == "help" || a[0] == "--help" {
+		fmt.Println("nudge now MESSAGE | every DURATION MESSAGE | watch APP_ID --every DURATION | watch --focused --every DURATION | inspect | pause DURATION | snooze DURATION | resume | status | list | daemon | version")
+		return nil
 	}
 	if a[0] == "inspect" {
 		if len(a) != 1 {
@@ -228,11 +311,33 @@ func run(a []string) error {
 		}
 		return inspect()
 	}
+	if a[0] == "daemon" {
+		return runDaemon()
+	}
+	unlock, err := lockConfig()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	c, p, e := load()
 	if e != nil {
 		return e
 	}
 	switch a[0] {
+	case "config":
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(c)
+	case "diagnostics":
+		s := status(c)
+		configError := ""
+		if err := validateConfig(c); err != nil {
+			configError = err.Error()
+		}
+		return json.NewEncoder(os.Stdout).Encode(diagnosticsResponse{Version: version, NiriError: s.NiriError, NotificationAvailable: s.NotificationAvailable, ConfigError: configError})
+	case "web":
+		fmt.Println("http://" + address)
+		return nil
 	case "now":
 		if len(a) < 2 {
 			return errors.New("usage: nudge now MESSAGE")
@@ -286,7 +391,7 @@ func run(a []string) error {
 		}
 		c.Reminders = append(c.Reminders, Reminder{Kind: "watch", App: app, Every: every, Message: message})
 		return save(c, p)
-	case "pause":
+	case "pause", "snooze":
 		if len(a) != 2 {
 			return errors.New("usage: nudge pause DURATION")
 		}
@@ -316,8 +421,6 @@ func run(a []string) error {
 			fmt.Printf(" every %s — %s\n", r.Every, r.Message)
 		}
 		return nil
-	case "daemon":
-		return runDaemon()
 	default:
 		return fmt.Errorf("unknown command %q", a[0])
 	}

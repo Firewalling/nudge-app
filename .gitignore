@@ -1,4 +1,5 @@
 .installation-backup/
+.smoke/
 node_modules/
 dist/
 nudge
