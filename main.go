@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -197,7 +198,8 @@ func runDaemon() error {
 	if e != nil {
 		return e
 	}
-	stopHTTP, err := startHTTP()
+	runtime := &schedulerState{}
+	stopHTTP, err := startHTTP(runtime)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nudge: dashboard unavailable: %v\n", err)
 	} else {
@@ -223,16 +225,20 @@ func runDaemon() error {
 		}
 		unlock, err := lockConfig()
 		if err != nil {
+			runtime.fail(err)
 			fmt.Fprintf(os.Stderr, "nudge: lock config: %v\n", err)
 			continue
 		}
 		c, _, err := load()
 		if err != nil {
+			runtime.fail(err)
 			fmt.Fprintf(os.Stderr, "nudge: load config: %v\n", err)
 			unlock()
 			continue
 		}
 		if time.Now().Before(c.PausedUntil) || inQuietHours(c, time.Now()) {
+			app, _, focusErr := focusedWindow()
+			runtime.set(snapshotSchedule(c, app.AppID, focusErr, nil, time.Now(), ""))
 			sessions = map[int]watchSession{}
 			unlock()
 			continue
@@ -248,7 +254,8 @@ func runDaemon() error {
 			previousRules = string(rulesJSON)
 		}
 		now := time.Now()
-		app, _, _ := focusedWindow()
+		app, _, focusErr := focusedWindow()
+		schedulerErr := ""
 		allowed := cooldownAllows(c, now)
 		changed := false
 		for i := range c.Reminders {
@@ -270,6 +277,7 @@ func runDaemon() error {
 				continue
 			}
 			if err := notify(r.Message); err != nil {
+				schedulerErr = err.Error()
 				fmt.Fprintf(os.Stderr, "nudge: %v\n", err)
 				continue
 			}
@@ -287,9 +295,11 @@ func runDaemon() error {
 		}
 		if changed {
 			if err := save(c, p); err != nil {
+				schedulerErr = err.Error()
 				fmt.Fprintf(os.Stderr, "nudge: save config: %v\n", err)
 			}
 		}
+		runtime.set(snapshotSchedule(c, app.AppID, focusErr, sessions, time.Now(), schedulerErr))
 		unlock()
 	}
 }
@@ -426,6 +436,14 @@ func run(a []string) error {
 	}
 }
 func main() {
+	if port := os.Getenv("NUDGE_PORT"); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			fmt.Fprintln(os.Stderr, "nudge: NUDGE_PORT must be between 1 and 65535")
+			os.Exit(1)
+		}
+		address = fmt.Sprintf("127.0.0.1:%d", n)
+	}
 	if e := run(os.Args[1:]); e != nil {
 		fmt.Fprintln(os.Stderr, "nudge:", e)
 		os.Exit(1)

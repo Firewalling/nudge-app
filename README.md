@@ -17,6 +17,7 @@ go build -o nudge .
 ```
 
 Open the URL above. The dashboard is served only on IPv4 loopback; if the port is already occupied, the daemon logs the error and continues scheduling without the dashboard. Configuration defaults to `$XDG_CONFIG_HOME/nudge/config.json` or `~/.config/nudge/config.json`. Existing Nudge JSON configurations are accepted. Writes use an atomic rename and a lock shared by the CLI and daemon. Avoid editing the file while a Nudge command is writing it.
+For an isolated local instance, set `NUDGE_PORT` to a different port and `XDG_CONFIG_HOME` to a separate directory. The listener remains restricted to `127.0.0.1`.
 
 The dashboard edits rules, the shared cooldown and quiet hours; changes are saved to the same configuration used by the CLI. Reminders continue when the browser is closed. Niri window events wake the scheduler; a five-second timer also checks due reminders and recovers from missed events. A watched app is reminded on focus and repeats during continuous focus. Periodic reminders run when due. A single cooldown applies across scheduled notifications. Pause and quiet hours suppress scheduling; quiet hours use local time and may cross midnight. `now` sends immediately and bypasses the scheduled cooldown and pause. Snooze is a temporary pause. Due times are estimates and may be delayed by the timer, cooldown, quiet hours or notification failure.
 
@@ -59,4 +60,4 @@ For frontend development, run the daemon, then `cd frontend && npm run dev`. Vit
 - **No notifications:** verify `notify-send` is installed, the user D-Bus session is available, and the notification daemon is running. A successful notification command only means the request was accepted; it does not prove a popup was visible. SwayNC Do Not Disturb can suppress popups.
 - **No focused app:** run `nudge inspect` in the graphical session and check the user service's Niri environment. A missing focused window is normal when none is focused.
 - **Configuration error:** run `nudge diagnostics` and inspect the JSON. Quiet-hour start and end must both be set in `HH:MM` format; durations must be positive.
-- **Next reminder shown as unavailable:** exact scheduling information is not currently exposed in the dashboard.
+- **Next reminder shown as unavailable:** eligibility depends on current focus and cooldown; it is withheld while scheduling is suppressed, has an error, or the earliest eligibility falls within quiet hours. The displayed time is not a delivery guarantee.
