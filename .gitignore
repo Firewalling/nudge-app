@@ -1,0 +1,4 @@
+.installation-backup/
+node_modules/
+dist/
+nudge

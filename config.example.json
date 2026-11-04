@@ -1,0 +1,10 @@
+{
+  "reminders": [
+    { "kind": "every", "every": "30m", "message": "Are you choosing this, or drifting?" },
+    { "kind": "every", "every": "45m", "message": "Does this deserve your attention?" },
+    { "kind": "every", "every": "60m", "message": "Remember why you started." },
+    { "kind": "every", "every": "90m", "message": "Be intentional." },
+    { "kind": "watch", "app": "firefox", "every": "15m", "message": "Stay focused on what matters." }
+  ],
+  "cooldown": "5m"
+}

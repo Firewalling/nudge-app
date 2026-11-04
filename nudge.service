@@ -1,0 +1,12 @@
+[Unit]
+Description=Nudge mindful reminders
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/nudge daemon
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
