@@ -38,6 +38,16 @@ Niri window events wake the scheduler, and a five-second timer checks due remind
 
 The dashboard binds only to IPv4 loopback on port 8788. Set `NUDGE_PORT` to a port from 1 to 65535 to change it; use the same value for `nudge web`. Set `XDG_CONFIG_HOME` to a separate directory for an isolated configuration. If the dashboard port is occupied, the daemon logs the error and continues scheduling without the dashboard.
 
+## Insights and privacy
+
+Insights is optional and stays on this computer. **Record reminder history** is off by default; turn it on in Insights to record new events. **Record app activity** is a separate, initially disabled choice. Retention defaults to 30 days and can be changed in the same view. Turning recording off keeps existing history; **Delete all history** removes recorded events without changing reminders or history settings.
+
+History is stored in `$XDG_DATA_HOME/nudge/history.db`, or `~/.local/share/nudge/history.db` when `XDG_DATA_HOME` is unset. Nudge records notification command attempts (including failures), pause, resume and snooze actions, and a suppression when an otherwise-due reminder is held by pause, quiet hours or cooldown. Suppressions are deduplicated while the same rule remains due for the same reason in a running daemon. A restart or rule change begins a new observation.
+
+If app activity is enabled, app-specific reminder events can include the app ID, and Nudge records short, consistently observed foreground-window intervals. Foreground time is not proof of active use. Focus changes between observations, sleep, disconnects, crashes, clock changes, short intervals and disabled recording can leave gaps; durations are recorded in whole seconds. Unsafe app IDs that resemble paths, URLs or free text are omitted. Window titles, reminder messages and URLs are not stored.
+
+Insights groups event times by local day and hour. A notification attempt does not establish that a notification was displayed or read. Nudge prunes expired records automatically. Clearing history uses SQLite secure deletion, checkpoints its write-ahead log and vacuums the database; this does not guarantee erasure from filesystem snapshots, backups or storage-device copies. New events may be recorded after deletion if history remains enabled.
+
 ## Troubleshooting
 
 - **Dashboard unavailable:** check the daemon log and port. Use `127.0.0.1`, not `localhost`, and the configured port.

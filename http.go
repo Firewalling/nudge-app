@@ -18,7 +18,7 @@ import (
 //go:embed frontend/dist
 var assets embed.FS
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 var address = "127.0.0.1:8788"
 
@@ -141,6 +141,7 @@ func status(c Config, states ...*schedulerState) statusResponse {
 }
 func handler(states ...*schedulerState) http.Handler {
 	mux := http.NewServeMux()
+	registerInsights(mux, states...)
 	mux.HandleFunc("/api/v1/status", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			apiError(w, 405, "method not allowed")
@@ -274,6 +275,7 @@ func handler(states ...*schedulerState) http.Handler {
 			apiError(w, 500, err.Error())
 			return
 		}
+		recordControl(states, req.Action)
 		jsonResponse(w, 200, status(c, states...))
 	})
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {

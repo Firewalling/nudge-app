@@ -11,6 +11,7 @@ import (
 
 func TestAPIConfigControlAndSecurity(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	h := handler()
 	request := func(method, path, host, origin string, body []byte) *httptest.ResponseRecorder {
 		t.Helper()

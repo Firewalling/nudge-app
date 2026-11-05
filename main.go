@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -198,7 +199,9 @@ func runDaemon() error {
 	if e != nil {
 		return e
 	}
-	runtime := &schedulerState{}
+	recorder := newInsightsRecorder()
+	defer recorder.close()
+	runtime := &schedulerState{insights: recorder}
 	stopHTTP, err := startHTTP(runtime)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nudge: dashboard unavailable: %v\n", err)
@@ -211,9 +214,13 @@ func runDaemon() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	wake := make(chan struct{}, 1)
-	go watchNiri(ctx, wake)
+	var disconnects atomic.Uint64
+	var connected atomic.Bool
+	go watchNiri(ctx, wake, &disconnects, &connected)
 	sessions := map[int]watchSession{}
 	var previousRules string
+	suppressed := map[int]string{}
+	var observation focusObservation
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
 	for {
@@ -236,13 +243,9 @@ func runDaemon() error {
 			unlock()
 			continue
 		}
-		if time.Now().Before(c.PausedUntil) || inQuietHours(c, time.Now()) {
-			app, _, focusErr := focusedWindow()
-			runtime.set(snapshotSchedule(c, app.AppID, focusErr, nil, time.Now(), ""))
-			sessions = map[int]watchSession{}
-			unlock()
-			continue
-		}
+		now := time.Now()
+		paused := now.Before(c.PausedUntil)
+		quiet := inQuietHours(c, now)
 		rules := make([]Reminder, len(c.Reminders))
 		copy(rules, c.Reminders)
 		for i := range rules {
@@ -252,9 +255,14 @@ func runDaemon() error {
 		if string(rulesJSON) != previousRules {
 			sessions = map[int]watchSession{}
 			previousRules = string(rulesJSON)
+			suppressed = map[int]string{}
 		}
-		now := time.Now()
-		app, _, focusErr := focusedWindow()
+		app, found, focusErr := focusedWindow()
+		generation := disconnects.Load()
+		validFocus := connected.Load() && focusErr == nil && found && validateAppID(app.AppID) == nil
+		if event, ok := observation.observe(now, app.AppID, validFocus, generation); ok {
+			recorder.record(event)
+		}
 		schedulerErr := ""
 		allowed := cooldownAllows(c, now)
 		changed := false
@@ -262,6 +270,7 @@ func runDaemon() error {
 			r := &c.Reminders[i]
 			if r.Disabled {
 				delete(sessions, i)
+				delete(suppressed, i)
 				continue
 			}
 			due := false
@@ -273,10 +282,36 @@ func runDaemon() error {
 				d, err := duration(r.Every)
 				due = err == nil && (r.Last.IsZero() || now.Sub(r.Last) >= d)
 			}
-			if !due || !allowed {
+			if !due {
+				delete(suppressed, i)
 				continue
 			}
-			if err := notify(r.Message); err != nil {
+			eventApp := ""
+			if r.Kind == "watch" {
+				eventApp = r.App
+			}
+			reason := ""
+			if paused {
+				reason = "pause"
+			} else if quiet {
+				reason = "quiet"
+			} else if !allowed {
+				reason = "cooldown"
+			}
+			if reason != "" {
+				if suppressionOnce(suppressed, i, reason) {
+					recorder.record(insightEvent{at: now, kind: "suppressed_" + reason, app: eventApp})
+				}
+				continue
+			}
+			delete(suppressed, i)
+			err := notify(r.Message)
+			kind := "attempt"
+			if err != nil {
+				kind = "failure"
+			}
+			recorder.record(insightEvent{at: now, kind: kind, app: eventApp})
+			if err != nil {
 				schedulerErr = err.Error()
 				fmt.Fprintf(os.Stderr, "nudge: %v\n", err)
 				continue
@@ -292,6 +327,9 @@ func runDaemon() error {
 			c.LastNotification = now
 			allowed = false
 			changed = true
+		}
+		if paused || quiet {
+			sessions = map[int]watchSession{}
 		}
 		if changed {
 			if err := save(c, p); err != nil {
@@ -328,7 +366,11 @@ func run(a []string) error {
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	defer func() {
+		if unlock != nil {
+			unlock()
+		}
+	}()
 	c, p, e := load()
 	if e != nil {
 		return e
@@ -352,7 +394,15 @@ func run(a []string) error {
 		if len(a) < 2 {
 			return errors.New("usage: nudge now MESSAGE")
 		}
-		return notify(strings.Join(a[1:], " "))
+		err := notify(strings.Join(a[1:], " "))
+		kind := "attempt"
+		if err != nil {
+			kind = "failure"
+		}
+		unlock()
+		unlock = nil
+		recordControl(nil, kind)
+		return err
 	case "every":
 		if len(a) < 3 {
 			return errors.New("usage: nudge every DURATION MESSAGE")
@@ -410,10 +460,22 @@ func run(a []string) error {
 			return err
 		}
 		c.PausedUntil = time.Now().Add(d)
-		return save(c, p)
+		if err := save(c, p); err != nil {
+			return err
+		}
+		unlock()
+		unlock = nil
+		recordControl(nil, a[0])
+		return nil
 	case "resume":
 		c.PausedUntil = time.Time{}
-		return save(c, p)
+		if err := save(c, p); err != nil {
+			return err
+		}
+		unlock()
+		unlock = nil
+		recordControl(nil, "resume")
+		return nil
 	case "status":
 		if time.Now().Before(c.PausedUntil) {
 			fmt.Printf("paused until %s\n", c.PausedUntil.Format(time.RFC3339))

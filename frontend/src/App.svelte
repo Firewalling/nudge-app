@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { Bell, Plus, ChevronDown } from 'lucide-svelte';
   import Interval from './lib/Interval.svelte';
+  import Insights from './Insights.svelte';
 
   type Reminder = { kind: 'watch' | 'every'; app?: string; every: string; message: string; disabled?: boolean };
   type Config = { reminders: Reminder[]; cooldown: string; paused_until: string; quiet_start?: string; quiet_end?: string };
@@ -9,6 +10,9 @@
   type Diagnostics = { version: string; niri_error: string; notification_available: boolean; config_error: string };
   type App = { id: string; name: string };
 
+  let page = $state<'reminders' | 'insights'>('reminders');
+  let insightsDirty = $state(false);
+  let insightsBusy = $state(false);
   let config = $state<Config | null>(null);
   let status = $state<Status | null>(null);
   let diagnostics = $state<Diagnostics | null>(null);
@@ -65,7 +69,7 @@
   onMount(() => {
     void (async () => { await Promise.all([loadStatus(), loadConfig(), loadApps(), loadDiagnostics()]); loading = false; })();
     const timer = window.setInterval(() => { if (!document.hidden) void loadStatus(); }, 15000);
-    const beforeUnload = (event: BeforeUnloadEvent) => { if (dirty || saving) { event.preventDefault(); event.returnValue = ''; } };
+    const beforeUnload = (event: BeforeUnloadEvent) => { if (dirty || saving || insightsDirty || insightsBusy) { event.preventDefault(); event.returnValue = ''; } };
     window.addEventListener('beforeunload', beforeUnload);
     return () => { window.clearInterval(timer); window.removeEventListener('beforeunload', beforeUnload); };
   });
@@ -152,12 +156,20 @@
     const unit = match[2] === 's' ? 'second' : match[2] === 'm' ? 'minute' : 'hour';
     return `${match[1]} ${unit}${Number(match[1]) === 1 ? '' : 's'}`;
   }
+  function navigate(next: 'reminders' | 'insights') {
+    if (next === page) return;
+    if (insightsBusy) return;
+    if (page === 'insights' && insightsDirty && !window.confirm('Discard unsaved history settings?')) return;
+    insightsDirty = false;
+    page = next;
+  }
 </script>
 
-<svelte:head><title>Nudge — reminders</title><meta name="description" content="Manage Nudge reminders and settings." /></svelte:head>
+<svelte:head><title>Nudge — {page === 'reminders' ? 'Reminders' : 'Insights'}</title><meta name="description" content="Manage Nudge reminders and insights." /></svelte:head>
 
-<header class="site-header"><div class="brand"><Bell size={20} aria-hidden="true" /><span>nudge</span></div></header>
+<header class="site-header"><div class="brand"><Bell size={20} aria-hidden="true" /><span>nudge</span><nav class="main-nav" aria-label="Main navigation"><button type="button" aria-current={page === 'reminders' ? 'page' : undefined} disabled={insightsBusy} onclick={() => navigate('reminders')}>Reminders</button><button type="button" aria-current={page === 'insights' ? 'page' : undefined} onclick={() => navigate('insights')}>Insights</button></nav></div></header>
 <main>
+  {#if page === 'reminders'}
   <div class="page-heading"><div><p class="eyebrow">A little help remembering</p><h1>Reminders</h1></div><button class="button primary" type="button" onclick={() => openEditor(null)} disabled={!config || saving || !!settings}><Plus size={18} aria-hidden="true" /> Add Reminder</button></div>
   {#if notice}<div class="feedback success" role="status">{notice}<button class="text-button" type="button" onclick={() => notice = ''}>Dismiss</button></div>{/if}
   {#if statusError}<div class="feedback error" role="alert">Could not check reminders: {statusError}<button class="text-button" type="button" onclick={loadStatus}>Try again</button></div>{/if}
@@ -167,7 +179,7 @@
     <div class="status-copy"><span class:active={!!status && status.active && status.scheduler_ready && !status.scheduler_error && status.notification_available} class="status-indicator" aria-hidden="true"></span><div><h2 id="status-heading">{loading ? 'Checking reminders…' : !status ? 'Reminder status unavailable' : status.scheduler_error || !status.notification_available ? 'Reminders need attention' : !status.scheduler_ready ? 'Reminders are starting' : isPaused ? 'Reminders are paused' : status.suppression_reason === 'quiet_hours' ? 'Quiet hours are on' : status.active ? 'Reminders are on' : 'Reminders are off'}</h2><p>{!status ? 'Check your connection and try again.' : status.scheduler_error ? status.scheduler_error : !status.notification_available ? 'Notifications are unavailable. Check Diagnostics.' : isPaused ? `Paused until ${formatDate(status.paused_until)}.` : status.suppression_reason === 'quiet_hours' ? 'Reminders will resume after quiet hours.' : !status.scheduler_ready ? 'Waiting for the reminder service.' : 'Nudge is ready to check reminders.'}</p></div></div>
     {#if status}<button class="button secondary" type="button" onclick={() => control(isPaused ? 'resume' : 'pause')} disabled={controlling}>{isPaused ? 'Resume reminders' : 'Pause for 1 hour'}</button>{/if}
   </section>
-  <details class="snooze"><summary>Snooze reminders</summary><div class="snooze-controls"><label for="snooze">Snooze for</label><select id="snooze" bind:value={snoozeDuration}><option value="5m">5 minutes</option><option value="15m">15 minutes</option><option value="30m">30 minutes</option><option value="1h">1 hour</option></select><button class="button secondary" type="button" onclick={() => control('snooze')} disabled={controlling || !status}>Snooze</button></div></details>
+  <details class="snooze"><summary>Snooze (pause for a different time)</summary><div class="snooze-controls"><label for="snooze">Pause for</label><select id="snooze" bind:value={snoozeDuration}><option value="5m">5 minutes</option><option value="15m">15 minutes</option><option value="30m">30 minutes</option><option value="1h">1 hour</option></select><button class="button secondary" type="button" onclick={() => control('snooze')} disabled={controlling || !status}>Snooze</button></div></details>
 
   <section class="reminders" aria-labelledby="reminders-heading">
     <div class="section-heading"><h2 id="reminders-heading">Your reminders</h2>{#if config}<span>{config.reminders.length} {config.reminders.length === 1 ? 'reminder' : 'reminders'}</span>{/if}</div>
@@ -189,5 +201,8 @@
 
   <div class="additional"><details class="disclosure"><summary><span><strong>Settings</strong><small>Quiet hours and time between notifications</small></span><ChevronDown size={18} aria-hidden="true" /></summary><div class="disclosure-content">{#if !settings}<p>Choose when reminders are quiet and how much time to leave between notifications.</p><button class="button secondary" type="button" onclick={openSettings} disabled={!config || !!draft || saving}>Edit settings</button>{:else}<form onsubmit={(event) => { event.preventDefault(); void saveSettings(); }}><label for="cooldown">Time between notifications</label><Interval id="cooldown" bind:value={settings.cooldown} /><p class="help">The minimum time between any two notifications.</p><div class="time-fields"><div><label for="quiet-start">Quiet hours start</label><input id="quiet-start" type="time" bind:value={settings.quiet_start} /></div><div><label for="quiet-end">Quiet hours end</label><input id="quiet-end" type="time" bind:value={settings.quiet_end} /></div></div><p class="help">Leave both times blank to turn off quiet hours.</p><div class="form-actions"><button class="button quiet" type="button" onclick={cancelSettings} disabled={saving}>Cancel</button><button class="button primary" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save settings'}</button></div></form>{/if}</div></details>
   <details class="disclosure"><summary><span><strong>Diagnostics</strong><small>Connection and service details</small></span><ChevronDown size={18} aria-hidden="true" /></summary><div class="disclosure-content">{#if diagnosticsError}<p role="alert">{diagnosticsError} <button class="text-button" type="button" onclick={loadDiagnostics}>Try again</button></p>{/if}{#if diagnostics}<dl><div><dt>Notification executable <small>Availability only; delivery is not verified.</small></dt><dd>{diagnostics.notification_available ? 'Available' : 'Unavailable'}</dd></div><div><dt>Niri connection</dt><dd>{diagnostics.niri_error || 'No errors reported'}</dd></div><div><dt>Configuration</dt><dd>{diagnostics.config_error || 'No errors reported'}</dd></div><div><dt>Scheduler</dt><dd>{status?.scheduler_error || (status ? 'No errors reported' : 'Unavailable')}</dd></div><div><dt>Focused app</dt><dd>{!status?.focus_known ? 'Unavailable' : status.focused_app || 'No app focused'}</dd></div><div><dt>Next reminder</dt><dd>{status ? formatDate(status.next_reminder) : 'Unavailable'}<small>{status?.next_description}</small></dd></div><div><dt>Matching reminders</dt><dd>{status?.matching_rules_known ? status.active_rules.join(', ') || 'None' : 'Unavailable'}</dd></div><div><dt>Version</dt><dd>{diagnostics.version || 'Unknown'}</dd></div></dl>{:else if !diagnosticsError}<p>Loading diagnostics…</p>{/if}<button class="button quiet" type="button" onclick={() => { void loadStatus(); void loadDiagnostics(); void loadApps(); }}>Refresh diagnostics</button></div></details></div>
+  {:else}
+    <Insights onDirtyChange={(value, busy) => { insightsDirty = value; insightsBusy = busy; }} />
+  {/if}
   <footer>Nudge · A local reminder service</footer>
 </main>

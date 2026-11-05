@@ -24,16 +24,18 @@ systemctl --user status nudge.service
 
 ## Existing installation or rollback
 
-Stop the existing user service before replacing its executable. Save copies of the binary, service file and configuration to a new private backup directory; if a path does not exist, skip its copy. Set `config` to the actual configuration path if the service uses a different `XDG_CONFIG_HOME`. Inspect the service definition and any drop-ins (`systemctl --user cat nudge.service`) before replacing it; the supplied unit may differ from your existing setup.
+Stop the existing user service and any other Nudge processes before replacing its executable or copying its SQLite history. Save copies of the binary, service file, configuration and history to a new private backup directory; if a path does not exist, skip its copy. Set `config` and `history` to the actual paths if the service uses different XDG directories. Inspect the service definition and any drop-ins (`systemctl --user cat nudge.service`) before replacing it; the supplied unit may differ from your existing setup.
 
 ```sh
 systemctl --user stop nudge.service
 backup=$(mktemp -d "$HOME/nudge-backup.XXXXXXXX")
 config="${XDG_CONFIG_HOME:-$HOME/.config}/nudge/config.json"
+history="${XDG_DATA_HOME:-$HOME/.local/share}/nudge"
 printf 'Backup directory: %s\n' "$backup"
 [ ! -e "$HOME/.local/bin/nudge" ] || cp -p "$HOME/.local/bin/nudge" "$backup/nudge"
 [ ! -e "$HOME/.config/systemd/user/nudge.service" ] || cp -p "$HOME/.config/systemd/user/nudge.service" "$backup/nudge.service"
 [ ! -e "$config" ] || cp -p "$config" "$backup/config.json"
+[ ! -d "$history" ] || cp -a "$history" "$backup/history"
 ```
 
 Confirm that each existing file was backed up successfully. Then, if you intend to replace the binary and unit, copy them individually; `cp -i` asks before overwriting. The configuration is not replaced.

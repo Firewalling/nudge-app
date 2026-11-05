@@ -20,6 +20,7 @@ type schedulerSnapshot struct {
 type schedulerState struct {
 	mu       sync.RWMutex
 	snapshot schedulerSnapshot
+	insights *insightsRecorder
 }
 
 func (s *schedulerState) set(v schedulerSnapshot) { s.mu.Lock(); s.snapshot = v; s.mu.Unlock() }

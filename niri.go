@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"sync/atomic"
 	"time"
 )
 
 // watchNiri wakes the scheduler on window events and reconnects after IPC loss.
-func watchNiri(ctx context.Context, wake chan<- struct{}) {
+func watchNiri(ctx context.Context, wake chan<- struct{}, disconnects *atomic.Uint64, connected *atomic.Bool) {
 	for ctx.Err() == nil {
 		cmd := exec.CommandContext(ctx, "niri", "msg", "--json", "event-stream")
 		out, err := cmd.StdoutPipe()
@@ -17,6 +18,7 @@ func watchNiri(ctx context.Context, wake chan<- struct{}) {
 			err = cmd.Start()
 		}
 		if err == nil {
+			connected.Store(true)
 			scanner := bufio.NewScanner(out)
 			scanner.Buffer(make([]byte, 4096), 8<<20)
 			for scanner.Scan() {
@@ -43,7 +45,13 @@ func watchNiri(ctx context.Context, wake chan<- struct{}) {
 					}
 				}
 			}
+			connected.Store(false)
+			disconnects.Add(1)
 			_ = cmd.Wait()
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
 		}
 		timer := time.NewTimer(5 * time.Second)
 		select {

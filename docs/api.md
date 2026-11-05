@@ -10,8 +10,13 @@ The daemon serves the dashboard and JSON API at `http://127.0.0.1:8788` by defau
 | GET | `/api/v1/config` | Current configuration and its `ETag` |
 | PUT | `/api/v1/config` | Validate and replace configuration |
 | POST | `/api/v1/control` | Pause, snooze or resume |
+| GET | `/api/v1/insights?days=7` | Recorded daily, hourly and app aggregates; `days` may be 7 or 30 |
+| PUT | `/api/v1/insights/settings` | Set history and app-activity collection and retention |
+| DELETE | `/api/v1/insights/history` | Delete all recorded history |
 
 The apps endpoint returns `{ "apps": [{ "id": "...", "name": "..." }], "error": "" }`. It lists open windows only, deduplicated by application ID. Names are derived from IDs; they are not an installed-application catalog. If Niri is unavailable, `apps` is empty and `error` explains why.
+
+Insights settings accept `{"enabled":true,"app_activity":false,"retention_days":30}`; all fields are required and retention must be 1–3650 days. The response includes settings, `days` with reminder attempts and snoozes, `hours` with attempts, and `apps` with attempts and observed foreground seconds. An `error` string can report a recorder failure even when the read succeeds. See [Insights and privacy](usage.md#insights-and-privacy) for collection and deletion semantics.
 
 Control accepts, for example, `{"action":"pause","duration":"1h"}`, `{"action":"snooze","duration":"15m"}`, or `{"action":"resume"}`. Configuration fields and constraints are described in [usage](usage.md#configuration-and-scheduling). PUT preserves the existing pause and last-notification state, and preserves a rule's last-send time when its kind, app, interval and message match an existing rule. Send the `ETag` from GET in `If-Match` to detect concurrent configuration edits; a mismatch returns 409. The check is optional, so clients should use it to avoid overwriting other edits.
 

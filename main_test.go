@@ -153,6 +153,7 @@ func TestCooldownAndCommandsPersistRemindersAndPause(t *testing.T) {
 		t.Fatal("cooldown did not expire at its configured duration")
 	}
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	if err := run([]string{"every", "30m", "Are you being intentional?"}); err != nil {
 		t.Fatal(err)
 	}

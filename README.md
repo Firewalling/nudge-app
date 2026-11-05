@@ -7,6 +7,7 @@ Nudge is a local, app-aware reminder daemon for Niri on Linux. It sends desktop 
 - Schedule periodic reminders or reminders for a focused app.
 - Edit rules, quiet hours and a shared cooldown in the dashboard.
 - Pause or snooze reminders; scheduling continues when the browser is closed.
+- Explore optional, local reminder history in Insights.
 
 ## Build and run
 
