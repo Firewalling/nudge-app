@@ -29,6 +29,8 @@
   let editing = $state<number | null>(null);
   let settings = $state<Config | null>(null);
   let snoozeDuration = $state('15m');
+  let closing = $state(false);
+  let editorDialog = $state<HTMLDialogElement>();
   let revision = '';
   let originalDraft = '';
   let originalSettings = '';
@@ -86,25 +88,35 @@
     finally { saving = false; }
   }
   function openEditor(index: number | null) {
-    if (!config || saving || settings) return;
+    if (!config || saving || settings || closing) return;
     if (draft && dirty && !window.confirm('Discard your unsaved reminder changes?')) return;
     editing = index;
     draft = index === null ? { kind: 'every', every: '30m', message: '', app: '' } : { ...config.reminders[index], app: config.reminders[index].kind === 'watch' ? config.reminders[index].app : '' };
     originalDraft = JSON.stringify(draft);
     void loadApps();
-    void tick().then(() => document.getElementById('message')?.focus());
+    void tick().then(() => { editorDialog?.showModal(); document.getElementById('message')?.focus(); });
+  }
+  async function closeEditor() {
+    if (closing) return;
+    closing = true;
+    if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      await new Promise<void>(resolve => window.setTimeout(resolve, 150));
+    }
+    editorDialog?.close();
+    draft = null; editing = null;
+    closing = false;
   }
   function cancelEditor() {
-    if (dirty && !window.confirm('Discard your unsaved reminder changes?')) return;
-    draft = null; editing = null;
+    if (saving || closing || (dirty && !window.confirm('Discard your unsaved reminder changes?'))) return;
+    void closeEditor();
   }
   async function saveReminder() {
-    if (!config || !draft) return;
+    if (!config || !draft || closing) return;
     const reminder = { ...draft, kind: draft.app ? 'watch' as const : 'every' as const };
     if (!reminder.app) delete reminder.app;
     const reminders = [...config.reminders];
     if (editing === null) reminders.push(reminder); else reminders[editing] = reminder;
-    if (await saveConfig({ ...config, reminders })) { draft = null; editing = null; }
+    if (await saveConfig({ ...config, reminders })) await closeEditor();
   }
   async function toggleReminder(index: number, enabled: boolean) {
     if (!config) return;
@@ -128,6 +140,7 @@
   }
   async function reloadConfig() {
     if (dirty && !window.confirm('Discard your unsaved changes and reload?')) return;
+    editorDialog?.close();
     draft = null; settings = null; editing = null;
     await loadConfig();
   }
@@ -160,6 +173,8 @@
     if (next === page) return;
     if (insightsBusy) return;
     if (page === 'insights' && insightsDirty && !window.confirm('Discard unsaved history settings?')) return;
+    if (page === 'reminders' && (saving || (dirty && !window.confirm('Discard your unsaved changes?')))) return;
+    if (page === 'reminders') { draft = null; settings = null; editing = null; }
     insightsDirty = false;
     page = next;
   }
@@ -168,7 +183,8 @@
 <svelte:head><title>Nudge — {page === 'reminders' ? 'Reminders' : 'Insights'}</title><meta name="description" content="Manage Nudge reminders and insights." /></svelte:head>
 
 <header class="site-header"><div class="brand"><Bell size={20} aria-hidden="true" /><span>nudge</span><nav class="main-nav" aria-label="Main navigation"><button type="button" aria-current={page === 'reminders' ? 'page' : undefined} disabled={insightsBusy} onclick={() => navigate('reminders')}>Reminders</button><button type="button" aria-current={page === 'insights' ? 'page' : undefined} onclick={() => navigate('insights')}>Insights</button></nav></div></header>
-<main>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<main id="main-content">
   {#if page === 'reminders'}
   <div class="page-heading"><div><p class="eyebrow">A little help remembering</p><h1>Reminders</h1></div><button class="button primary" type="button" onclick={() => openEditor(null)} disabled={!config || saving || !!settings}><Plus size={18} aria-hidden="true" /> Add Reminder</button></div>
   {#if notice}<div class="feedback success" role="status">{notice}<button class="text-button" type="button" onclick={() => notice = ''}>Dismiss</button></div>{/if}
@@ -190,14 +206,15 @@
     {/each}</div>{/if}
   </section>
 
-  {#if draft}<section class="editor" aria-labelledby="editor-heading"><h2 id="editor-heading">{editing === null ? 'Add Reminder' : 'Edit Reminder'}</h2><form onsubmit={(event) => { event.preventDefault(); void saveReminder(); }}>
+  {#if draft}<dialog class="editor" class:closing bind:this={editorDialog} aria-labelledby="editor-heading" oncancel={(event) => { event.preventDefault(); cancelEditor(); }} onclick={(event) => { if (editorDialog && event.target === editorDialog) { const rect = editorDialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) cancelEditor(); } }}><h2 id="editor-heading">{editing === null ? 'Add Reminder' : 'Edit Reminder'}</h2><form onsubmit={(event) => { event.preventDefault(); void saveReminder(); }}>
+    {#if configError}<div class="feedback error" role="alert"><span>Could not save reminder: {configError}</span><button class="text-button" type="button" onclick={reloadConfig} disabled={saving}>Reload saved configuration</button></div>{/if}
     <label for="message">Remind me to</label><input id="message" bind:value={draft.message} required placeholder="Take a break" />
     <label for="frequency">Remind me every</label><Interval id="frequency" bind:value={draft.every} />
     <label for="app-choice">Only while using</label><select id="app-choice" bind:value={draft.app}><option value="">Any app</option>{#if draft.app && !apps.some(app => app.id === draft?.app)}<option value={draft.app}>{appName(draft.app)} (not currently open)</option>{/if}{#each apps as app}<option value={app.id}>{app.name}</option>{/each}</select>
     {#if appsError}<p class="help">Open apps are unavailable: {appsError} You can still use any app or enter an app ID below.</p>{:else if apps.length === 0}<p class="help">No open apps found. You can still use any app or enter an app ID below.</p>{/if}
     <details class="advanced"><summary>Advanced: enter an app ID</summary><label for="app-id">App ID</label><input id="app-id" bind:value={draft.app} placeholder="e.g. firefox" /><p class="help">Leave blank to remind you in any app. App IDs are saved exactly as entered.</p></details>
     <div class="form-actions"><button class="button quiet" type="button" onclick={cancelEditor} disabled={saving}>Cancel</button><button class="button primary" type="submit" disabled={saving}>{saving ? 'Saving…' : editing === null ? 'Add Reminder' : 'Save'}</button></div>
-  </form></section>{/if}
+  </form></dialog>{/if}
 
   <div class="additional"><details class="disclosure"><summary><span><strong>Settings</strong><small>Quiet hours and time between notifications</small></span><ChevronDown size={18} aria-hidden="true" /></summary><div class="disclosure-content">{#if !settings}<p>Choose when reminders are quiet and how much time to leave between notifications.</p><button class="button secondary" type="button" onclick={openSettings} disabled={!config || !!draft || saving}>Edit settings</button>{:else}<form onsubmit={(event) => { event.preventDefault(); void saveSettings(); }}><label for="cooldown">Time between notifications</label><Interval id="cooldown" bind:value={settings.cooldown} /><p class="help">The minimum time between any two notifications.</p><div class="time-fields"><div><label for="quiet-start">Quiet hours start</label><input id="quiet-start" type="time" bind:value={settings.quiet_start} /></div><div><label for="quiet-end">Quiet hours end</label><input id="quiet-end" type="time" bind:value={settings.quiet_end} /></div></div><p class="help">Leave both times blank to turn off quiet hours.</p><div class="form-actions"><button class="button quiet" type="button" onclick={cancelSettings} disabled={saving}>Cancel</button><button class="button primary" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save settings'}</button></div></form>{/if}</div></details>
   <details class="disclosure"><summary><span><strong>Diagnostics</strong><small>Connection and service details</small></span><ChevronDown size={18} aria-hidden="true" /></summary><div class="disclosure-content">{#if diagnosticsError}<p role="alert">{diagnosticsError} <button class="text-button" type="button" onclick={loadDiagnostics}>Try again</button></p>{/if}{#if diagnostics}<dl><div><dt>Notification executable <small>Availability only; delivery is not verified.</small></dt><dd>{diagnostics.notification_available ? 'Available' : 'Unavailable'}</dd></div><div><dt>Niri connection</dt><dd>{diagnostics.niri_error || 'No errors reported'}</dd></div><div><dt>Configuration</dt><dd>{diagnostics.config_error || 'No errors reported'}</dd></div><div><dt>Scheduler</dt><dd>{status?.scheduler_error || (status ? 'No errors reported' : 'Unavailable')}</dd></div><div><dt>Focused app</dt><dd>{!status?.focus_known ? 'Unavailable' : status.focused_app || 'No app focused'}</dd></div><div><dt>Next reminder</dt><dd>{status ? formatDate(status.next_reminder) : 'Unavailable'}<small>{status?.next_description}</small></dd></div><div><dt>Matching reminders</dt><dd>{status?.matching_rules_known ? status.active_rules.join(', ') || 'None' : 'Unavailable'}</dd></div><div><dt>Version</dt><dd>{diagnostics.version || 'Unknown'}</dd></div></dl>{:else if !diagnosticsError}<p>Loading diagnostics…</p>{/if}<button class="button quiet" type="button" onclick={() => { void loadStatus(); void loadDiagnostics(); void loadApps(); }}>Refresh diagnostics</button></div></details></div>

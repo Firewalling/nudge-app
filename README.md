@@ -25,7 +25,7 @@ It's easy to lose track of time when using an app. Nudge can ask your desktop to
 
 </details>
 
-Both previews use example data.
+Both previews use example data. Nudge follows your system's light or dark appearance; reminder editing opens in a sheet on phones.
 
 A notification attempt does not prove a notification was displayed or read. Observed window focus is not proof of active use. See [Insights and privacy](docs/usage.md#insights-and-privacy) for what is stored and its limitations.
 
