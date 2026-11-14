@@ -44,6 +44,26 @@
     --switch-off: #7b8880;
   }
 }
+:root[data-theme='mocha'] {
+  color-scheme: dark;
+  --background: #1e1e2e;
+  --foreground: #cdd6f4;
+  --muted: #bac2de;
+  --surface: #181825;
+  --raised: #313244;
+  --border: #585b70;
+  --accent: #b4befe;
+  --accent-text: #1e1e2e;
+  --danger: #f38ba8;
+  --success: #a6e3a1;
+  --error-bg: #313244;
+  --control: #1e1e2e;
+  --chart-secondary: #f9e2af;
+  --switch-off: #6c7086;
+}
+main .appearance { max-width: 720px; }
+main .appearance label { display: block; font-weight: 700; margin: 16px 0 7px; }
+main .appearance select { max-width: 360px; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; background: var(--background); font-size: 16px; line-height: 1.5; }
 button, input, select { font: inherit; }

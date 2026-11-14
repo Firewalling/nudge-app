@@ -15,6 +15,21 @@
   type App = { id: string; name: string };
 
   let page = $state<'reminders' | 'settings' | 'insights' | 'diagnostics'>('reminders');
+  let theme = $state<'forest' | 'mocha'>('forest');
+  let themeError = $state('');
+  function changeTheme(event: Event) {
+    const value = event.currentTarget instanceof HTMLSelectElement ? event.currentTarget.value : '';
+    if (value !== 'forest' && value !== 'mocha') return;
+    try {
+      localStorage.setItem('nudge-theme', value);
+      theme = value;
+      document.documentElement.dataset.theme = value;
+      themeError = '';
+    } catch {
+      themeError = 'Appearance could not be saved on this device.';
+      if (event.currentTarget instanceof HTMLSelectElement) event.currentTarget.value = theme;
+    }
+  }
   let insightsDirty = $state(false);
   let insightsBusy = $state(false);
   let config = $state<Config | null>(null);
@@ -80,6 +95,12 @@
     catch (error) { diagnostics = null; diagnosticsError = errorMessage(error); }
   }
   onMount(() => {
+    try {
+      if (localStorage.getItem('nudge-theme') === 'mocha') theme = 'mocha';
+      document.documentElement.dataset.theme = theme;
+    } catch {
+      themeError = 'Saved appearance is unavailable on this device.';
+    }
     void (async () => { await Promise.all([loadStatus(), loadConfig(), loadApps(), loadDiagnostics()]); loading = false; })();
     const timer = window.setInterval(() => { if (!document.hidden) void loadStatus(); }, 15000);
     const beforeUnload = (event: BeforeUnloadEvent) => { if (dirty || saving || insightsDirty || insightsBusy) { event.preventDefault(); event.returnValue = ''; } };
@@ -262,6 +283,18 @@
   </section>
   {/if}
   {#if page === 'settings' && configError}<div class="feedback error" role="alert"><span>Could not save or load settings: {configError}</span><button class="text-button" type="button" onclick={reloadConfig}>Reload saved configuration</button></div>{/if}
+  {#if page === 'settings'}
+    <section class="appearance" aria-labelledby="appearance-title">
+      <h2 id="appearance-title">Appearance</h2>
+      <label for="theme">Theme</label>
+      <select id="theme" value={theme} onchange={changeTheme}>
+        <option value="forest">Nudge Forest · follows system appearance</option>
+        <option value="mocha">Catppuccin Mocha Lavender</option>
+      </select>
+      <p class="help">Saved on this device for this interface.</p>
+      {#if themeError}<p class="feedback error" role="alert">{themeError}</p>{/if}
+    </section>
+  {/if}
   <div class="workspace">
   {#if page === 'reminders'}
   <div class="workspace-main">

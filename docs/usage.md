@@ -34,6 +34,8 @@ In the dashboard, **Add reminder** creates a reminder directly. Choose **Any app
 
 The reminder list shows how many are enabled; each row has its own on/off switch, edit and delete actions. Switches respond immediately and return to their previous state if saving fails. Reminder changes are reflected in the list and announced to assistive technology; errors remain visible. The editor opens from the side on wider screens and from the bottom on smaller screens. Press Escape to dismiss it (Nudge asks before discarding unsaved changes). Settings and Diagnostics have separate navigation destinations. Leaving Settings while editing asks before discarding changes. Motion follows the system's reduced-motion preference.
 
+Settings → Appearance selects Nudge Forest (which follows the system light or dark preference) or Catppuccin Mocha Lavender. The choice is stored locally by each browser or desktop WebView, independently of the daemon configuration.
+
 The dashboard's **Why might I not see a reminder?** section explains common scheduling and desktop notification settings that can prevent a visible popup. If Nudge cannot detect the focused app while an app-specific reminder is enabled, its status calls this out; Diagnostics has connection details.
 
 Use **Pause reminders** beside the status to choose a duration; **Resume reminders** ends the pause early. Escape closes the pause menu and returns focus to its control.
