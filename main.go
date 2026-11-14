@@ -214,9 +214,9 @@ func runDaemon() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	wake := make(chan struct{}, 1)
-	var disconnects atomic.Uint64
+	var focusGeneration atomic.Uint64
 	var connected atomic.Bool
-	go watchNiri(ctx, wake, &disconnects, &connected)
+	go watchNiri(ctx, wake, &focusGeneration, &connected)
 	sessions := map[int]watchSession{}
 	var previousRules string
 	suppressed := map[int]string{}
@@ -258,7 +258,7 @@ func runDaemon() error {
 			suppressed = map[int]string{}
 		}
 		app, found, focusErr := focusedWindow()
-		generation := disconnects.Load()
+		generation := focusGeneration.Load()
 		validFocus := connected.Load() && focusErr == nil && found && validateAppID(app.AppID) == nil
 		if event, ok := observation.observe(now, app.AppID, validFocus, generation); ok {
 			recorder.record(event)
