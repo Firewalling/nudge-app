@@ -6,9 +6,8 @@
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, Context, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    App, Application, Bounds, Context, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
 };
-use gpui_platform::application;
 use serde::Deserialize;
 
 #[derive(Default, Deserialize)]
@@ -44,8 +43,9 @@ struct Reminder {
 #[derive(Default)]
 struct Snapshot {
     status: Option<Status>,
-    reminders: Vec<Reminder>,
+    reminders: Option<Vec<Reminder>>,
     error: Option<String>,
+    loading: bool,
 }
 
 fn base_url() -> String {
@@ -58,20 +58,29 @@ fn base_url() -> String {
     format!("http://127.0.0.1:{port}")
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &str) -> Result<T, String> {
-    let url = format!("{}{}", base_url(), path);
-    ureq::get(&url)
+fn read_json<T: serde::de::DeserializeOwned>(agent: &ureq::Agent, base: &str, path: &str) -> Result<T, String> {
+    let url = format!("{base}{path}");
+    let response = agent.get(&url).call().map_err(|err| format!("{path}: {err}"))?;
+    if !(200..300).contains(&response.status()) {
+        return Err(format!("{path}: HTTP {}", response.status()));
+    }
+    response.into_json::<T>().map_err(|err| format!("{path}: {err}"))
+}
+
+fn api_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .try_proxy_from_env(false)
+        .redirects(0)
         .timeout(Duration::from_millis(800))
-        .call()
-        .map_err(|err| format!("{path}: {err}"))?
-        .into_json::<T>()
-        .map_err(|err| format!("{path}: {err}"))
+        .build()
 }
 
 impl Snapshot {
     fn load() -> Self {
-        let status: Result<Status, String> = read_json("/api/v1/status");
-        let config: Result<Config, String> = read_json("/api/v1/config");
+        let agent = api_agent();
+        let base = base_url();
+        let status: Result<Status, String> = read_json(&agent, &base, "/api/v1/status");
+        let config: Result<Config, String> = read_json(&agent, &base, "/api/v1/config");
         let error = status
             .as_ref()
             .err()
@@ -80,14 +89,35 @@ impl Snapshot {
 
         Self {
             status: status.ok(),
-            reminders: config.map(|value| value.reminders).unwrap_or_default(),
+            reminders: config.ok().map(|value| value.reminders),
             error,
+            loading: false,
         }
     }
 }
 
 struct NudgeDesktop {
     snapshot: Snapshot,
+}
+
+impl NudgeDesktop {
+    fn new(cx: &mut Context<Self>) -> Self {
+        cx.spawn(async move |this, cx| {
+            loop {
+                let snapshot = cx.background_executor().spawn(async { Snapshot::load() }).await;
+                if this.update(cx, |view, cx| {
+                    view.snapshot = snapshot;
+                    cx.notify();
+                }).is_err() {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+            }
+        }).detach();
+        Self {
+            snapshot: Snapshot { loading: true, ..Default::default() },
+        }
+    }
 }
 
 impl Render for NudgeDesktop {
@@ -100,6 +130,7 @@ impl Render for NudgeDesktop {
         let accent = rgb(0xb5e3c7);
 
         let status = match &self.snapshot.status {
+            None if self.snapshot.loading => "Connecting to daemon",
             None => "Daemon unavailable",
             Some(state) if !state.active => "Paused or in quiet hours",
             Some(state) if !state.scheduler_ready => "Waiting for scheduler",
@@ -107,7 +138,7 @@ impl Render for NudgeDesktop {
         };
 
         let mut reminders = div().flex().flex_col().gap_3();
-        for reminder in &self.snapshot.reminders {
+        for reminder in self.snapshot.reminders.iter().flatten() {
             let cadence = if reminder.app.is_empty() {
                 format!("Every {}", reminder.every)
             } else {
@@ -177,7 +208,7 @@ impl Render for NudgeDesktop {
                                 div()
                                     .text_sm()
                                     .text_color(accent)
-                                    .child(format!("{} configured", self.snapshot.reminders.len())),
+                                    .child(self.snapshot.reminders.as_ref().map_or_else(|| "Reminders unavailable".to_string(), |items| format!("{} configured", items.len()))),
                             ),
                     )
                     .child(
@@ -190,7 +221,7 @@ impl Render for NudgeDesktop {
                                 view.child(div().text_sm().text_color(secondary).child(focused))
                             }),
                     )
-                    .when(self.snapshot.reminders.is_empty(), |view| {
+                    .when(self.snapshot.reminders.as_ref().is_some_and(Vec::is_empty), |view| {
                         view.child(
                             div()
                                 .p_6()
@@ -227,19 +258,35 @@ impl Render for NudgeDesktop {
 }
 
 fn main() {
-    // This first proof of concept reads daemon state once at startup.
-    // Proper background refresh and mutation controls are future milestones.
-    let snapshot = Snapshot::load();
-    application().run(move |cx: &mut App| {
+    Application::new().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(900.0), px(620.0)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| NudgeDesktop { snapshot }),
+            |_, cx| cx.new(NudgeDesktop::new),
         )
         .expect("GPUI failed to open a native window");
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{io::Write, net::TcpListener, thread};
+
+    #[test]
+    fn refuses_api_redirects() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/\r\nContent-Length: 0\r\n\r\n").unwrap();
+        });
+        let result: Result<Status, String> = read_json(&api_agent(), &base, "/api/v1/status");
+        assert_eq!(result.err().as_deref(), Some("/api/v1/status: HTTP 302"));
+        server.join().unwrap();
+    }
 }
