@@ -11,7 +11,7 @@ Nudge Go daemon (unchanged; systemd user service)
            └── GPUI native desktop (this directory; Rust, separate process)
 ```
 
-The experimental desktop reads `GET /api/v1/status` and `GET /api/v1/config` in the background, refreshes every five seconds, displays status and reminder rows, and does not send mutating requests. It does not access or modify the config file or SQLite history directly.
+The experimental desktop reads `GET /api/v1/status` and `GET /api/v1/config` in the background, refreshes every five seconds, displays status and reminder rows, and does not send mutating requests. Missing required response fields are reported as errors rather than interpreted as empty or paused states. It does not access or modify the config file or SQLite history directly.
 
 ## Start on Fedora/Niri
 

@@ -12,27 +12,20 @@ use serde::Deserialize;
 
 #[derive(Default, Deserialize)]
 struct Status {
-    #[serde(default)]
     active: bool,
-    #[serde(default)]
     scheduler_ready: bool,
-    #[serde(default)]
     focused_app: String,
-    #[serde(default)]
     niri_error: String,
 }
 
 #[derive(Default, Deserialize)]
 struct Config {
-    #[serde(default)]
     reminders: Vec<Reminder>,
 }
 
 #[derive(Default, Deserialize)]
 struct Reminder {
-    #[serde(default)]
     message: String,
-    #[serde(default)]
     every: String,
     #[serde(default)]
     app: String,
@@ -287,6 +280,19 @@ mod tests {
         });
         let result: Result<Status, String> = read_json(&api_agent(), &base, "/api/v1/status");
         assert_eq!(result.err().as_deref(), Some("/api/v1/status: HTTP 302"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn incomplete_status_is_not_treated_as_paused() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}").unwrap();
+        });
+        let result: Result<Status, String> = read_json(&api_agent(), &base, "/api/v1/status");
+        assert!(result.err().is_some_and(|error| error.contains("missing field")));
         server.join().unwrap();
     }
 }
