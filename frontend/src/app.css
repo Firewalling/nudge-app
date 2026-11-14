@@ -96,6 +96,12 @@ summary::-webkit-details-marker { display: none; }
 .pause-controls label { font-size: .9rem; font-weight: 700; }
 .workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(230px, 280px); gap: clamp(32px, 5vw, 72px); align-items: start; margin-top: 40px; }
 .workspace-main, .workspace-side { min-width: 0; }
+main[data-page] .workspace { grid-template-columns: minmax(0, 1fr); }
+main[data-page='reminders'] .workspace-side,
+main[data-page='settings'] .disclosure:nth-child(2),
+main[data-page='diagnostics'] .disclosure:first-child { display: none; }
+main[data-page='settings'] .workspace-side,
+main[data-page='diagnostics'] .workspace-side { max-width: 720px; }
 .reminders { margin-top: 0; }
 .section-heading { align-items: center; margin-bottom: 14px; }
 .section-heading span { color: var(--muted); font-size: .875rem; }
@@ -263,6 +269,9 @@ dialog.editor::backdrop { background: #101b17a6; }
 @media (max-width: 650px) {
   main { padding: 38px 20px 48px; }
   .brand { min-height: 64px; padding-inline: 20px; }
+  .brand { flex-wrap: wrap; }
+  .main-nav { flex: 1 0 100%; flex-wrap: wrap; margin-left: 0; }
+  .main-nav button { flex: none; }
   .main-nav button { padding-inline: 10px; }
   .page-heading { align-items: flex-start; flex-direction: column; gap: 22px; margin-bottom: 30px; }
   .page-heading .button { width: 100%; }
