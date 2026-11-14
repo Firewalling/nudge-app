@@ -44,6 +44,22 @@ A reminder has `kind` (`every` or `watch`), positive duration `every`, and `mess
 
 Niri window events wake the scheduler, and a five-second timer checks due reminders and recovers from missed events. A watched app is eligible immediately on focus, then repeats during continuous focus; its interval is not an initial waiting period. Periodic reminders are eligible when due; a new periodic rule is initially due. The shared cooldown, pause and quiet hours can delay scheduling. Due times shown in the dashboard are estimates, not delivery guarantees; eligibility also depends on focus and notification success.
 
+Elapsed-session reminders are configured separately from watched rules in the JSON configuration (or through the configuration API):
+
+```json
+{
+  "reminders": [],
+  "cooldown": "5m",
+  "elapsed_reminders": [
+    { "app": "brave", "after": "20m", "repeat": "20m", "message": "Still doing what you intended?" }
+  ]
+}
+```
+
+`after` is the first threshold; omit `repeat` for one notification per session, or set it to a positive duration for further notifications. Set `disabled` to `true` to turn a rule off. These rules are not editable in the dashboard. The daemon counts only short, consistent Niri focus observations and resets when focus changes, the stream disconnects, or observations have an uncertain gap. Pause, snooze, quiet hours and the shared cooldown suppress delivery. The elapsed timer is in memory and does not require Insights history.
+
+Nudge does not currently have a reliable idle-input source: uninterrupted observed focus can include time away from the computer. The duration is observed foreground time, not verified active use. Long sleeps, delayed observations, clock drift or connection loss reset the session instead of filling the gap. The dashboard's next-reminder estimate does not include elapsed rules.
+
 The dashboard binds only to IPv4 loopback on port 8788. Set `NUDGE_PORT` to a port from 1 to 65535 to change it; use the same value for `nudge web`. Set `XDG_CONFIG_HOME` to a separate directory for an isolated configuration. If the dashboard port is occupied, the daemon logs the error and continues scheduling without the dashboard.
 
 ## Insights and privacy

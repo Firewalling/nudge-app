@@ -49,6 +49,25 @@ func validateConfig(c Config) error {
 	if len(c.Reminders) > 500 {
 		return fmt.Errorf("too many rules")
 	}
+	if len(c.ElapsedReminders) > 500 {
+		return fmt.Errorf("too many elapsed rules")
+	}
+	for i, r := range c.ElapsedReminders {
+		if err := validateAppID(r.App); err != nil {
+			return fmt.Errorf("elapsed rule %d: %w", i+1, err)
+		}
+		if _, err := duration(r.After); err != nil {
+			return fmt.Errorf("elapsed rule %d: %w", i+1, err)
+		}
+		if r.Repeat != "" {
+			if _, err := duration(r.Repeat); err != nil {
+				return fmt.Errorf("elapsed rule %d repeat: %w", i+1, err)
+			}
+		}
+		if strings.TrimSpace(r.Message) == "" || len(r.Message) > 4096 {
+			return fmt.Errorf("elapsed rule %d: message must be 1–4096 bytes", i+1)
+		}
+	}
 	for i, r := range c.Reminders {
 		if r.Kind != "watch" && r.Kind != "every" {
 			return fmt.Errorf("rule %d: invalid kind", i+1)

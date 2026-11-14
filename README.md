@@ -10,6 +10,7 @@ It's easy to lose track of time when using an app. Nudge can ask your desktop to
 
 - Create, edit, disable and delete reminders in the dashboard or add them from the CLI.
 - Set quiet hours and a shared cooldown, or pause and snooze reminders. The daemon keeps scheduling when the browser is closed.
+- Configure elapsed foreground-session reminders separately from watched rules; see the [usage guide](docs/usage.md#configuration-and-scheduling) for configuration and idle-observation limitations.
 - Optionally explore local history of reminder attempts and observed app focus in Insights. History is off by default; app activity is a separate opt-in.
 
 ## Preview

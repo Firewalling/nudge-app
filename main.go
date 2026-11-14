@@ -25,13 +25,21 @@ type Reminder struct {
 	Disabled bool      `json:"disabled,omitempty"`
 	Last     time.Time `json:"last,omitempty"`
 }
+type ElapsedReminder struct {
+	App      string `json:"app"`
+	After    string `json:"after"`
+	Repeat   string `json:"repeat,omitempty"`
+	Message  string `json:"message"`
+	Disabled bool   `json:"disabled,omitempty"`
+}
 type Config struct {
-	Reminders        []Reminder `json:"reminders"`
-	PausedUntil      time.Time  `json:"paused_until,omitempty"`
-	Cooldown         string     `json:"cooldown,omitempty"`
-	QuietStart       string     `json:"quiet_start,omitempty"`
-	QuietEnd         string     `json:"quiet_end,omitempty"`
-	LastNotification time.Time  `json:"last_notification,omitempty"`
+	Reminders        []Reminder        `json:"reminders"`
+	ElapsedReminders []ElapsedReminder `json:"elapsed_reminders,omitempty"`
+	PausedUntil      time.Time         `json:"paused_until,omitempty"`
+	Cooldown         string            `json:"cooldown,omitempty"`
+	QuietStart       string            `json:"quiet_start,omitempty"`
+	QuietEnd         string            `json:"quiet_end,omitempty"`
+	LastNotification time.Time         `json:"last_notification,omitempty"`
 }
 type focusedWindowInfo struct {
 	AppID string `json:"app_id"`
@@ -218,6 +226,8 @@ func runDaemon() error {
 	var connected atomic.Bool
 	go watchNiri(ctx, wake, &focusGeneration, &connected)
 	sessions := map[int]watchSession{}
+	elapsedSessions := map[int]elapsedSession{}
+	var previousElapsed string
 	var previousRules string
 	suppressed := map[int]string{}
 	var observation focusObservation
@@ -256,6 +266,11 @@ func runDaemon() error {
 			sessions = map[int]watchSession{}
 			previousRules = string(rulesJSON)
 			suppressed = map[int]string{}
+		}
+		elapsedJSON, _ := json.Marshal(c.ElapsedReminders)
+		if string(elapsedJSON) != previousElapsed {
+			elapsedSessions = map[int]elapsedSession{}
+			previousElapsed = string(elapsedJSON)
 		}
 		app, found, focusErr := focusedWindow()
 		generation := focusGeneration.Load()
@@ -327,6 +342,31 @@ func runDaemon() error {
 			c.LastNotification = now
 			allowed = false
 			changed = true
+		}
+		for i, rule := range c.ElapsedReminders {
+			if rule.Disabled {
+				delete(elapsedSessions, i)
+				continue
+			}
+			session := elapsedSessions[i]
+			session.observe(now, app.AppID, rule.App, validFocus, generation)
+			if session.eligible(rule, paused, quiet, allowed) && connected.Load() && focusGeneration.Load() == generation {
+				err := notify(elapsedMessage(rule, session.observed))
+				kind := "attempt"
+				if err != nil {
+					kind = "failure"
+					schedulerErr = err.Error()
+					fmt.Fprintf(os.Stderr, "nudge: %v\n", err)
+				} else {
+					session.sent = true
+					session.sentAt = session.observed
+					c.LastNotification = now
+					allowed = false
+					changed = true
+				}
+				recorder.record(insightEvent{at: now, kind: kind, app: rule.App})
+			}
+			elapsedSessions[i] = session
 		}
 		if paused || quiet {
 			sessions = map[int]watchSession{}
