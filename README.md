@@ -25,7 +25,7 @@ It's easy to lose track of time when using an app. Nudge can ask your desktop to
 
 </details>
 
-Both previews use example data. Nudge follows your system's light or dark appearance; reminder editing opens in a sheet on phones.
+These previews show an earlier interface with example data. Nudge follows your system's light or dark appearance; reminder editing opens in a sheet on phones.
 
 A notification attempt does not prove a notification was displayed or read. Observed window focus is not proof of active use. See [Insights and privacy](docs/usage.md#insights-and-privacy) for what is stored and its limitations.
 
@@ -44,7 +44,7 @@ go build -o nudge .
 ./nudge daemon
 ```
 
-The dashboard is embedded in the executable, so build the frontend first. Open [http://127.0.0.1:8788](http://127.0.0.1:8788) and choose **Add Reminder**, or leave the daemon running and add your first reminder from another terminal:
+The dashboard is embedded in the executable, so build the frontend first. Open [http://127.0.0.1:8788](http://127.0.0.1:8788) and choose **Add reminder**, or leave the daemon running and add your first reminder from another terminal:
 
 ```sh
 ./nudge every 30m "Take a moment to check in."
@@ -53,6 +53,21 @@ The dashboard is embedded in the executable, so build the frontend first. Open [
 A new configuration has no reminders. A new periodic reminder is initially due, subject to the shared cooldown, pause and quiet hours. For an app-specific reminder, use `./nudge inspect` to find its Niri app ID, then `./nudge watch APP_ID --every 15m "Be intentional."`.
 
 To run Nudge as a systemd user service, follow the [installation guide](docs/service.md). It includes separate safe steps for a new or existing installation and the required graphical-session environment.
+
+### Native desktop (experimental)
+
+The Wails window uses the same dashboard and talks to a separately running daemon over loopback. Closing it does not stop reminders. Building requires Go 1.26+, GCC, pkg-config, GTK4 and WebKitGTK 6 development packages.
+
+```sh
+cd frontend
+npm ci
+VITE_NUDGE_DESKTOP=1 npm run build -- --outDir ../desktop/dist --emptyOutDir
+cd ../desktop
+go build -o nudge-desktop .
+./nudge-desktop
+```
+
+Start the daemon separately and set `NUDGE_PORT` for the desktop if the daemon uses a non-default port. Build the browser dashboard separately without `VITE_NUDGE_DESKTOP`.
 
 ## Configuration
 

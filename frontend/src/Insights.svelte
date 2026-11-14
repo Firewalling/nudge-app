@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { apiFetch } from './transport';
   let { onDirtyChange }: { onDirtyChange: (dirty: boolean, busy: boolean) => void } = $props();
 
   type Day = { date: string; attempts: number; snoozes: number };
@@ -37,7 +38,7 @@
     const id = ++requestID;
     loading = true; error = '';
     try {
-      const result = await readResponse<Insights>(await fetch(`/api/v1/insights?days=${range}`));
+      const result = await readResponse<Insights>(await apiFetch(`/api/v1/insights?days=${range}`));
       if (id !== requestID) return;
       data = result;
       selected = { enabled: result.enabled, app_activity: result.app_activity, retention_days: result.retention_days };
@@ -56,7 +57,7 @@
   async function saveSettings() {
     saving = true; error = ''; notice = '';
     try {
-      await readResponse<Settings>(await fetch('/api/v1/insights/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(selected) }));
+      await readResponse<Settings>(await apiFetch('/api/v1/insights/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(selected) }));
       await load(); notice = 'History settings saved.';
     } catch (cause) { error = message(cause); }
     finally { saving = false; }
@@ -66,7 +67,7 @@
     const pendingSettings = settingsDirty ? { ...selected } : null;
     saving = true; error = ''; notice = '';
     try {
-      await readResponse<unknown>(await fetch('/api/v1/insights/history', { method: 'DELETE' }));
+      await readResponse<unknown>(await apiFetch('/api/v1/insights/history', { method: 'DELETE' }));
       await load();
       if (pendingSettings) selected = pendingSettings;
       notice = 'History deleted.';
@@ -93,16 +94,16 @@
   <div class="insights-heading">
     <div><p class="eyebrow">Private to this computer</p><h1 id="insights-title">Your activity</h1><p>See when Nudge tried to send reminders and when you snoozed them.</p></div>
     <div class="range-switch" role="group" aria-label="Time range">
-      <button type="button" class:chosen={range === 7} aria-pressed={range === 7} onclick={() => chooseRange(7)}>7 days</button>
-      <button type="button" class:chosen={range === 30} aria-pressed={range === 30} onclick={() => chooseRange(30)}>30 days</button>
+      <button type="button" class:chosen={range === 7} aria-pressed={range === 7} disabled={saving} onclick={() => chooseRange(7)}>7 days</button>
+      <button type="button" class:chosen={range === 30} aria-pressed={range === 30} disabled={saving} onclick={() => chooseRange(30)}>30 days</button>
     </div>
   </div>
   {#if notice}<p class="insights-notice" role="status">{notice}</p>{/if}
   {#if error}<div class="insights-error" role="alert"><span>History: {error}</span><button type="button" class="text-button" onclick={() => { if (!settingsDirty || window.confirm('Discard unsaved history settings and reload?')) void load(); }}>Reload</button></div>{/if}
   {#if loading}<p class="insights-loading" role="status">Loading your activity…</p>
   {:else if data}
-    {#if !data.enabled}<div class="history-state"><strong>History is off</strong><p>Nudge won’t record new activity. Turn on history below to see future reminders here.</p></div>{/if}
-    {#if !hasEvents && data.enabled}<div class="history-empty"><h2>No reminder activity recorded yet</h2><p>Insights will appear as Nudge records activity.</p></div>
+    {#if !data.enabled}<div class="history-state"><strong>History is off</strong><p>Nudge won’t record new activity. Existing history stays on this computer. <a href="#privacy-title">Turn on recording</a> to see future activity.</p></div>{/if}
+    {#if !hasEvents && data.enabled}<div class="history-empty"><h2>No activity recorded in the last {range} days</h2><p>Reminder attempts and snoozes will appear here as they are recorded.</p></div>
     {:else if hasEvents}
       <section class="insight-section" aria-labelledby="activity-title">
         <h2 id="activity-title">Reminders over time</h2>
@@ -140,7 +141,7 @@
       </section>
       <p class="coverage-note">Sleep and service interruptions can leave gaps in recorded history.</p>
     {/if}
-    <section class="privacy" aria-labelledby="privacy-title"><h2 id="privacy-title">History and privacy</h2><p>History stays on this computer. Nudge never records window titles, websites or document contents.</p>
+    <section class="privacy" aria-labelledby="privacy-title"><h2 id="privacy-title">History and privacy</h2><p>History stays on this computer. Nudge never records window titles, websites or reminder messages. Turning recording off keeps existing history; deleting history does not change your settings.</p>
       <form onsubmit={(event) => { event.preventDefault(); void saveSettings(); }}>
         <label class="privacy-toggle"><input type="checkbox" role="switch" bind:checked={selected.enabled} disabled={saving} /><span><strong>Record reminder history</strong><small>Keep reminder attempts, failures, pauses and snoozes.</small></span></label>
         <label class="privacy-toggle"><input type="checkbox" role="switch" bind:checked={selected.app_activity} disabled={saving || !selected.enabled} /><span><strong>Record app activity</strong><small>When history is on, also record app identifiers and observed foreground time. Focus does not prove active use.</small></span></label>
@@ -150,3 +151,16 @@
     </section>
   {/if}
 </section>
+
+<style>
+  .history-state a { color: inherit; text-underline-offset: 3px; }
+  .insights-error { align-items: center; flex-wrap: wrap; overflow-wrap: anywhere; }
+  .data-table summary { display: inline-flex; align-items: center; gap: .5rem; min-height: 44px; color: var(--foreground); font-weight: 700; }
+  .data-table summary::before { content: '▸'; display: inline-block; }
+  .data-table[open] summary::before { content: '▾'; }
+  .privacy-toggle { cursor: pointer; }
+  @media (max-width: 380px) {
+    .app-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .horizontal-track { grid-column: 1 / -1; grid-row: 2; }
+  }
+</style>
