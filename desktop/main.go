@@ -13,6 +13,9 @@ import (
 //go:embed all:dist
 var frontend embed.FS
 
+//go:embed org.wails.nudge.svg
+var icon []byte
+
 func main() {
 	port := os.Getenv("NUDGE_PORT")
 	if port == "" {
@@ -27,10 +30,12 @@ func main() {
 		log.Fatal(err)
 	}
 	app := application.New(application.Options{
-		Name: "Nudge",
+		Name:        "Nudge",
 		Description: "Gentle reminders for intentional days",
-		Services: []application.Service{application.NewService(client)},
-		Assets: application.AssetOptions{Handler: application.AssetFileServerFS(assets)},
+		Icon:        icon,
+		Linux:       application.LinuxOptions{ApplicationID: "org.wails.nudge"},
+		Services:    []application.Service{application.NewService(client)},
+		Assets:      application.AssetOptions{Handler: application.AssetFileServerFS(assets)},
 	})
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title: "Nudge", Width: 1060, Height: 760, MinWidth: 360, MinHeight: 500, URL: "/",

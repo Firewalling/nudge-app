@@ -55,20 +55,27 @@ A new configuration has no reminders. A new periodic reminder is initially due, 
 
 To run Nudge as a systemd user service, follow the [installation guide](docs/service.md). It includes separate safe steps for a new or existing installation and the required graphical-session environment.
 
-### Native desktop (experimental)
+### Native desktop
 
-The Wails window uses the same dashboard and talks to a separately running daemon over loopback. Closing it does not stop reminders. Building requires Go 1.26+, GCC, pkg-config, GTK4 and WebKitGTK 6 development packages.
+The Wails window uses the same dashboard and connects to the independently running daemon over IPv4 loopback. Closing the window does not stop the daemon or reminders. Set `NUDGE_PORT` when launching the desktop if the daemon uses a non-default port.
+
+On Fedora, building requires Go 1.26+, Node.js 24+, npm, GCC, pkg-config, `gtk4-devel` and `webkitgtk6.0-devel`. The build uses the checked-in npm and Go dependency locks:
 
 ```sh
-cd frontend
-npm ci
-VITE_NUDGE_DESKTOP=1 npm run build -- --outDir ../desktop/dist --emptyOutDir
-cd ../desktop
-go build -o nudge-desktop .
-./nudge-desktop
+make desktop
+./dist/nudge-desktop
 ```
 
-Start the daemon separately and set `NUDGE_PORT` for the desktop if the daemon uses a non-default port. Build the browser dashboard separately without `VITE_NUDGE_DESKTOP`.
+The production frontend is embedded in `dist/nudge-desktop`; no development server or Node.js runtime is needed. The installed machine needs the GTK4 and WebKitGTK 6 runtime libraries (`gtk4` and `webkitgtk6.0` on Fedora). Start the daemon separately as described above or in the [service guide](docs/service.md).
+
+To install the desktop binary, application launcher and icon for the current user:
+
+```sh
+make install-user
+make uninstall-user
+```
+
+The binary is installed to `~/.local/bin`, and the launcher and icon to `${XDG_DATA_HOME:-~/.local/share}`. Installation requires `desktop-file-install` (`desktop-file-utils` on Fedora) and writes the absolute binary path into the launcher. `BINDIR` and `DATADIR` may be overridden with absolute, non-root paths for a different user prefix or staging directory. Uninstall removes only those three installed files; it does not remove the daemon, its configuration, or history.
 
 ## Configuration
 
