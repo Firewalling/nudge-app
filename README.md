@@ -15,9 +15,16 @@ It's easy to lose track of time when using an app. Nudge can ask your desktop to
 
 ## Preview
 
-**Reminders** — manage reminders and see their status.
+**Desktop reminders** — example reminders and an in-app toast, captured in Wails.
 
-![Nudge reminders with example rules](docs/images/dashboard.png)
+![Nudge desktop reminders and a toast](docs/images/desktop-reminders.png)
+
+<details>
+<summary>See the centered editor at a narrow window size</summary>
+
+![Nudge desktop centered reminder editor](docs/images/desktop-editor-narrow.png)
+
+</details>
 
 <details>
 <summary>See Insights with example activity</summary>
@@ -26,7 +33,7 @@ It's easy to lose track of time when using an app. Nudge can ask your desktop to
 
 </details>
 
-These previews show an earlier interface with example data. Nudge Forest follows your system's light or dark appearance; Catppuccin Mocha Lavender is also available under Settings. Reminder editing opens in a sheet on phones.
+The Insights preview shows an earlier interface; all screenshots use example data. Nudge Forest follows your system's light or dark appearance; additional themes are available under Settings.
 
 A notification attempt does not prove a notification was displayed or read. Observed window focus is not proof of active use. See [Insights and privacy](docs/usage.md#insights-and-privacy) for what is stored and its limitations.
 

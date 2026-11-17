@@ -57,6 +57,8 @@ func (c *Client) Request(method, path, body, etag string) (Response, error) {
 		allowed = method == http.MethodGet || (method == http.MethodPut && etag != "")
 	case "/api/v1/control":
 		allowed = method == http.MethodPost
+	case "/api/v1/toast":
+		allowed = method == http.MethodPost
 	case "/api/v1/insights/settings":
 		allowed = method == http.MethodPut
 	case "/api/v1/insights/history":

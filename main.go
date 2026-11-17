@@ -157,6 +157,10 @@ func notify(m string) error {
 	}
 	return nil
 }
+
+func deliverReminder(runtime *schedulerState, foreground bool, title, body, native string) error {
+	return runtime.toasts.deliver(foreground, title, body, native, 2*time.Second, notify)
+}
 func parseFocusedWindow(raw []byte) (focusedWindowInfo, bool, error) {
 	if strings.TrimSpace(string(raw)) == "null" {
 		return focusedWindowInfo{}, false, nil
@@ -320,7 +324,11 @@ func runDaemon() error {
 				continue
 			}
 			delete(suppressed, i)
-			err := notify(r.Message)
+			foreground := validFocus && strings.EqualFold(app.AppID, "org.wails.nudge") && connected.Load() && focusGeneration.Load() == generation
+			err := deliverReminder(runtime, foreground, "Nudge reminder", r.Message, r.Message)
+			if errors.Is(err, errToastBusy) {
+				continue
+			}
 			kind := "attempt"
 			if err != nil {
 				kind = "failure"
@@ -351,7 +359,12 @@ func runDaemon() error {
 			session := elapsedSessions[i]
 			session.observe(now, app.AppID, rule.App, validFocus, generation)
 			if session.eligible(rule, paused, quiet, allowed) && connected.Load() && focusGeneration.Load() == generation {
-				err := notify(elapsedMessage(rule, session.observed))
+				foreground := strings.EqualFold(app.AppID, "org.wails.nudge")
+				err := deliverReminder(runtime, foreground, elapsedTitle(rule, session.observed), rule.Message, elapsedMessage(rule, session.observed))
+				if errors.Is(err, errToastBusy) {
+					elapsedSessions[i] = session
+					continue
+				}
 				kind := "attempt"
 				if err != nil {
 					kind = "failure"

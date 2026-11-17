@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { apiFetch } from './transport';
-  let { onDirtyChange }: { onDirtyChange: (dirty: boolean, busy: boolean) => void } = $props();
+  let { onDirtyChange, mode = 'insights', onOpenSettings }: { onDirtyChange: (dirty: boolean, busy: boolean) => void; mode?: 'insights' | 'settings'; onOpenSettings: () => void } = $props();
 
   type Day = { date: string; attempts: number; snoozes: number };
   type Hour = { hour: number; attempts: number };
@@ -26,7 +26,7 @@
   let hourMax = $derived(Math.max(1, ...(data?.hours.map(hour => hour.attempts) ?? [])));
   let appMax = $derived(Math.max(1, ...(data?.apps.map(app => app.attempts) ?? [])));
   let focusMax = $derived(Math.max(1, ...(data?.apps.map(app => app.foreground_seconds) ?? [])));
-  let hasEvents = $derived(attempts > 0 || snoozes > 0 || (data?.apps.some(app => app.foreground_seconds > 0) ?? false));
+  let hasEvents = $derived(attempts > 0 || snoozes > 0 || (!!data?.app_activity && data.apps.some(app => app.foreground_seconds > 0)));
 
   async function readResponse<T>(response: Response): Promise<T> {
     const body = await response.json().catch(() => null);
@@ -90,7 +90,8 @@
   }
 </script>
 
-<section class="insights" aria-labelledby="insights-title">
+<section class="insights" aria-labelledby={mode === 'insights' ? 'insights-title' : undefined} aria-label={mode === 'settings' ? 'History settings' : undefined}>
+  {#if mode === 'insights'}
   <div class="insights-heading">
     <div><p class="eyebrow">Private to this computer</p><h1 id="insights-title">Your activity</h1><p>See when Nudge tried to send reminders and when you snoozed them.</p></div>
     <div class="range-switch" role="group" aria-label="Time range">
@@ -98,11 +99,13 @@
       <button type="button" class:chosen={range === 30} aria-pressed={range === 30} disabled={saving} onclick={() => chooseRange(30)}>30 days</button>
     </div>
   </div>
+  {/if}
   {#if notice}<p class="insights-notice" role="status">{notice}</p>{/if}
   {#if error}<div class="insights-error" role="alert"><span>History: {error}</span><button type="button" class="text-button" onclick={() => { if (!settingsDirty || window.confirm('Discard unsaved history settings and reload?')) void load(); }}>Reload</button></div>{/if}
   {#if loading}<p class="insights-loading" role="status">Loading your activity…</p>
   {:else if data}
-    {#if !data.enabled}<div class="history-state"><strong>History is off</strong><p>Nudge won’t record new activity. Existing history stays on this computer. <a href="#privacy-title">Turn on recording</a> to see future activity.</p></div>{/if}
+    {#if mode === 'insights'}
+    {#if !data.enabled}<div class="history-state"><strong>History is off</strong><p>Nudge won’t record new activity. Existing history stays on this computer.</p><button type="button" class="text-button" onclick={onOpenSettings}>Review privacy settings</button></div>{/if}
     {#if !hasEvents && data.enabled}<div class="history-empty"><h2>No activity recorded in the last {range} days</h2><p>Reminder attempts and snoozes will appear here as they are recorded.</p></div>
     {:else if hasEvents}
       <section class="insight-section" aria-labelledby="activity-title">
@@ -126,8 +129,8 @@
         {#if data.apps.length === 0}<p class="chart-empty">No app activity was recorded in this period.</p>
         {:else}
           {#if data.apps.some(app => app.attempts > 0)}<div class="app-bars" role="img" aria-label="Reminder attempts by application. Exact values are in the table below.">{#each data.apps as app (app.app)}<div class="app-row"><span>{appName(app.app)}</span><span class="horizontal-track"><span style:width={`${(app.attempts / appMax) * 100}%`}></span></span><strong>{app.attempts}</strong></div>{/each}</div>{:else}<p class="chart-empty">No app-specific reminder attempts were recorded.</p>{/if}
-          {#if data.apps.some(app => app.foreground_seconds > 0)}<h3>Recorded foreground time</h3><p>This is observed window focus, not verified active use. Gaps and interruptions may be missing.</p><div class="app-bars" role="img" aria-label="Recorded foreground time by application. Exact values are in the table below.">{#each data.apps as app (app.app)}<div class="app-row"><span>{appName(app.app)}</span><span class="horizontal-track focus-track"><span style:width={`${(app.foreground_seconds / focusMax) * 100}%`}></span></span><strong>{duration(app.foreground_seconds)}</strong></div>{/each}</div>{/if}
-          <details class="data-table"><summary>View app numbers</summary><div class="table-scroll"><table><caption>Recorded app activity</caption><thead><tr><th scope="col">Application</th><th scope="col">Reminder attempts</th><th scope="col">Foreground time</th></tr></thead><tbody>{#each data.apps as app (app.app)}<tr><th scope="row">{appName(app.app)} ({app.app})</th><td>{app.attempts}</td><td>{duration(app.foreground_seconds)}</td></tr>{/each}</tbody></table></div></details>
+          {#if data.app_activity && data.apps.some(app => app.foreground_seconds > 0)}<h3>Recorded foreground time</h3><p>This is observed window focus, not verified active use. Gaps and interruptions may be missing.</p><div class="app-bars" role="img" aria-label="Recorded foreground time by application. Exact values are in the table below.">{#each data.apps as app (app.app)}<div class="app-row"><span>{appName(app.app)}</span><span class="horizontal-track focus-track"><span style:width={`${(app.foreground_seconds / focusMax) * 100}%`}></span></span><strong>{duration(app.foreground_seconds)}</strong></div>{/each}</div>{/if}
+          <details class="data-table"><summary>View app numbers</summary><div class="table-scroll"><table><caption>Recorded app activity</caption><thead><tr><th scope="col">Application</th><th scope="col">Reminder attempts</th>{#if data.app_activity}<th scope="col">Foreground time</th>{/if}</tr></thead><tbody>{#each data.apps as app (app.app)}<tr><th scope="row">{appName(app.app)} ({app.app})</th><td>{app.attempts}</td>{#if data.app_activity}<td>{duration(app.foreground_seconds)}</td>{/if}</tr>{/each}</tbody></table></div></details>
         {/if}
       </section>
       <section class="insight-section" aria-labelledby="patterns-title">
@@ -141,6 +144,8 @@
       </section>
       <p class="coverage-note">Sleep and service interruptions can leave gaps in recorded history.</p>
     {/if}
+    {/if}
+    {#if mode === 'settings'}
     <section class="privacy" aria-labelledby="privacy-title"><h2 id="privacy-title">History and privacy</h2><p>History stays on this computer. Nudge never records window titles, websites or reminder messages. Turning recording off keeps existing history; deleting history does not change your settings.</p>
       <form onsubmit={(event) => { event.preventDefault(); void saveSettings(); }}>
         <label class="privacy-toggle"><input type="checkbox" role="switch" bind:checked={selected.enabled} disabled={saving} /><span><strong>Record reminder history</strong><small>Keep reminder attempts, failures, pauses and snoozes.</small></span></label>
@@ -149,11 +154,11 @@
         <div class="privacy-actions"><button type="submit" class="button primary" disabled={saving || !settingsDirty}>{saving ? 'Saving…' : 'Save history settings'}</button><button type="button" class="button quiet danger" disabled={saving} onclick={clearHistory}>Delete all history</button></div>
       </form>
     </section>
+    {/if}
   {/if}
 </section>
 
 <style>
-  .history-state a { color: inherit; text-underline-offset: 3px; }
   .insights-error { align-items: center; flex-wrap: wrap; overflow-wrap: anywhere; }
   .data-table summary { display: inline-flex; align-items: center; gap: .5rem; min-height: 44px; color: var(--foreground); font-weight: 700; }
   .data-table summary::before { content: '▸'; display: inline-block; }

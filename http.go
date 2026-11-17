@@ -278,6 +278,48 @@ func handler(states ...*schedulerState) http.Handler {
 		recordControl(states, req.Action)
 		jsonResponse(w, 200, status(c, states...))
 	})
+	mux.HandleFunc("/api/v1/toast", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			apiError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if len(states) == 0 || states[0] == nil {
+			apiError(w, http.StatusServiceUnavailable, "reminder delivery unavailable")
+			return
+		}
+		var request struct {
+			Action string `json:"action"`
+			ID     uint64 `json:"id,omitempty"`
+		}
+		if err := decodeJSON(w, r, &request); err != nil {
+			apiError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		hub := &states[0].toasts
+		switch request.Action {
+		case "poll":
+			jsonResponse(w, http.StatusOK, map[string]any{"toast": hub.poll(time.Now())})
+		case "claim":
+			focused, found, err := focusedWindow()
+			if err != nil || !found || !strings.EqualFold(focused.AppID, "org.wails.nudge") {
+				apiError(w, http.StatusConflict, "desktop window is not focused")
+				return
+			}
+			if !hub.claim(request.ID) {
+				apiError(w, http.StatusConflict, "reminder is no longer available")
+				return
+			}
+			jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
+		case "dismiss":
+			if !hub.dismiss(request.ID) {
+				apiError(w, http.StatusNotFound, "reminder is no longer available")
+				return
+			}
+			jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
+		default:
+			apiError(w, http.StatusBadRequest, "unknown toast action")
+		}
+	})
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusNotFound, "unknown endpoint")
 	})

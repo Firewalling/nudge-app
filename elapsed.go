@@ -55,7 +55,7 @@ func (s elapsedSession) eligible(rule ElapsedReminder, paused, quiet, allowed bo
 	return !rule.Disabled && !paused && !quiet && allowed && s.due(rule)
 }
 
-func elapsedMessage(rule ElapsedReminder, observed time.Duration) string {
+func elapsedTitle(rule ElapsedReminder, observed time.Duration) string {
 	amount := int64(observed / time.Second)
 	unit := "second"
 	if observed >= time.Minute {
@@ -65,5 +65,9 @@ func elapsedMessage(rule ElapsedReminder, observed time.Duration) string {
 	if amount != 1 {
 		unit += "s"
 	}
-	return fmt.Sprintf("%d %s in %s. %s", amount, unit, appName(rule.App), rule.Message)
+	return fmt.Sprintf("%d %s in %s", amount, unit, appName(rule.App))
+}
+
+func elapsedMessage(rule ElapsedReminder, observed time.Duration) string {
+	return elapsedTitle(rule, observed) + ". " + rule.Message
 }

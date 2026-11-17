@@ -3,23 +3,31 @@
   import { slide } from 'svelte/transition';
   import { cubicOut } from 'svelte/easing';
   import { prefersReducedMotion } from 'svelte/motion';
-  import { Bell, Plus, ChevronDown, Timer, AppWindow, Pause, Play } from 'lucide-svelte';
+  import { Bell, Plus, ChevronDown, Timer, AppWindow, Pause, Play, X } from 'lucide-svelte';
   import Interval from './lib/Interval.svelte';
   import Insights from './Insights.svelte';
   import { apiFetch } from './transport';
 
   type Reminder = { kind: 'watch' | 'every'; app?: string; every: string; message: string; disabled?: boolean };
-  type Config = { reminders: Reminder[]; cooldown: string; paused_until: string; quiet_start?: string; quiet_end?: string };
+  type ElapsedReminder = { app: string; after: string; repeat?: string; message: string; disabled?: boolean };
+  type Draft = { kind: 'watch' | 'every' | 'elapsed'; app: string; every: string; repeat: string; message: string; disabled?: boolean };
+  type Config = { reminders: Reminder[]; elapsed_reminders?: ElapsedReminder[]; cooldown: string; paused_until: string; quiet_start?: string; quiet_end?: string };
   type Status = { active: boolean; paused_until: string; focused_app: string; focus_known: boolean; active_rules: string[]; matching_rules_known: boolean; scheduler_ready: boolean; suppression_reason: string; next_reminder: string; next_description: string; scheduler_error: string; niri_error: string; notification_available: boolean; version: string };
   type Diagnostics = { version: string; niri_error: string; notification_available: boolean; config_error: string };
   type App = { id: string; name: string };
+  type ReminderToast = { id: number; title: string; body: string; accepted: boolean };
 
   let page = $state<'reminders' | 'settings' | 'insights' | 'diagnostics'>('reminders');
-  let theme = $state<'forest' | 'mocha'>('forest');
+  type Theme = 'forest' | 'mocha' | 'latte' | 'nord' | 'rose' | 'tokyo' | 'gruvbox';
+  const themes: { id: Theme; label: string }[] = [
+    { id: 'forest', label: 'Nudge Forest' }, { id: 'mocha', label: 'Catppuccin Mocha Lavender' },
+    { id: 'latte', label: 'Catppuccin Latte' }, { id: 'nord', label: 'Nord' },
+    { id: 'rose', label: 'Rosé Pine' }, { id: 'tokyo', label: 'Tokyo Night' },
+    { id: 'gruvbox', label: 'Gruvbox Dark' },
+  ];
+  let theme = $state<Theme>('forest');
   let themeError = $state('');
-  function changeTheme(event: Event) {
-    const value = event.currentTarget instanceof HTMLSelectElement ? event.currentTarget.value : '';
-    if (value !== 'forest' && value !== 'mocha') return;
+  function changeTheme(value: Theme) {
     try {
       localStorage.setItem('nudge-theme', value);
       theme = value;
@@ -27,7 +35,7 @@
       themeError = '';
     } catch {
       themeError = 'Appearance could not be saved on this device.';
-      if (event.currentTarget instanceof HTMLSelectElement) event.currentTarget.value = theme;
+      // Keep the current theme when persistence is unavailable.
     }
   }
   let insightsDirty = $state(false);
@@ -41,11 +49,19 @@
   let statusError = $state('');
   let diagnosticsError = $state('');
   let notice = $state('');
+  let toast = $state<ReminderToast | null>(null);
+  let toastError = $state('');
+  let toastBusy = $state(false);
+  let toastSnoozed = false;
+  let toastPolling = false;
+  let toastEpoch = 0;
   let loading = $state(true);
   let saving = $state(false);
   let controlling = $state(false);
-  let draft = $state<Reminder | null>(null);
+  let draft = $state<Draft | null>(null);
   let editing = $state<number | null>(null);
+  let editingSource = $state<'reminders' | 'elapsed_reminders'>('reminders');
+  let repeatEnabled = $state(false);
   let settings = $state<Config | null>(null);
   let snoozeDuration = $state('1h');
   let editorDialog = $state<HTMLDialogElement>();
@@ -58,9 +74,9 @@
   let revision = '';
   let originalDraft = '';
   let originalSettings = '';
-  let dirty = $derived((editorActive && draft !== null && JSON.stringify(draft) !== originalDraft) || (settings !== null && JSON.stringify(settings) !== originalSettings));
+  let dirty = $derived((editorActive && draft !== null && JSON.stringify({ draft, repeatEnabled }) !== originalDraft) || (settings !== null && JSON.stringify(settings) !== originalSettings));
   let isPaused = $derived(status?.suppression_reason === 'paused' || (!!status?.paused_until && new Date(status.paused_until).getTime() > Date.now()));
-  let focusProblem = $derived(!!status?.active && !!status.scheduler_ready && !!status.niri_error && !!config?.reminders.some(rule => rule.kind === 'watch' && !rule.disabled));
+  let focusProblem = $derived(!!status?.active && !!status.scheduler_ready && !!status.niri_error && (!!config?.reminders.some(rule => rule.kind === 'watch' && !rule.disabled) || !!config?.elapsed_reminders?.some(rule => !rule.disabled)));
 
   async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const response = await apiFetch(`/api/v1/${path}`, options);
@@ -94,18 +110,66 @@
     try { diagnostics = await request<Diagnostics>('diagnostics'); diagnosticsError = ''; }
     catch (error) { diagnostics = null; diagnosticsError = errorMessage(error); }
   }
+  function isReminderToast(value: unknown): value is ReminderToast {
+    return typeof value === 'object' && value !== null && 'id' in value && Number.isSafeInteger(value.id) &&
+      'title' in value && typeof value.title === 'string' && 'body' in value && typeof value.body === 'string' &&
+      'accepted' in value && typeof value.accepted === 'boolean';
+  }
+  async function pollToast() {
+    if (toastPolling || document.hidden || !document.hasFocus()) return;
+    toastPolling = true;
+    const epoch = toastEpoch;
+    try {
+      const result = await request<{ toast: unknown }>('toast', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'poll' }) });
+      if (epoch !== toastEpoch || !isReminderToast(result.toast) || toast?.id === result.toast.id || toast) return;
+      if (!result.toast.accepted) {
+        if (document.hidden || !document.hasFocus()) return;
+        await request('toast', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'claim', id: result.toast.id }) });
+      }
+      if (epoch === toastEpoch) {
+        toast = result.toast;
+        toastSnoozed = false;
+        toastError = '';
+      }
+    } catch {
+      // The daemon falls back to a native notification if an offer is not claimed.
+    } finally {
+      toastPolling = false;
+    }
+  }
+  async function actOnToast(action: 'snooze' | 'dismiss') {
+    if (!toast || toastBusy) return;
+    toastBusy = true;
+    toastError = '';
+    try {
+      if (action === 'snooze' && !toastSnoozed) {
+        status = await request<Status>('control', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'snooze', duration: '5m' }) });
+        toastSnoozed = true;
+      }
+      const response = await apiFetch('/api/v1/toast', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'dismiss', id: toast.id }) });
+      if (!response.ok && response.status !== 404) throw new Error(`Dismiss failed (${response.status})`);
+      toastEpoch++;
+      toast = null;
+    } catch (error) {
+      toastError = errorMessage(error);
+    } finally {
+      toastBusy = false;
+    }
+  }
   onMount(() => {
     try {
-      if (localStorage.getItem('nudge-theme') === 'mocha') theme = 'mocha';
+      const saved = themes.find(option => option.id === localStorage.getItem('nudge-theme'));
+      if (saved) theme = saved.id;
       document.documentElement.dataset.theme = theme;
     } catch {
       themeError = 'Saved appearance is unavailable on this device.';
     }
     void (async () => { await Promise.all([loadStatus(), loadConfig(), loadApps(), loadDiagnostics()]); loading = false; })();
     const timer = window.setInterval(() => { if (!document.hidden) void loadStatus(); }, 15000);
+    const toastTimer = import.meta.env.VITE_NUDGE_DESKTOP === '1' ? window.setInterval(() => { void pollToast(); }, 750) : undefined;
     const beforeUnload = (event: BeforeUnloadEvent) => { if (dirty || saving || insightsDirty || insightsBusy) { event.preventDefault(); event.returnValue = ''; } };
     window.addEventListener('beforeunload', beforeUnload);
-    return () => { window.clearInterval(timer); window.removeEventListener('beforeunload', beforeUnload); };
+    return () => { window.clearInterval(timer); if (toastTimer !== undefined) window.clearInterval(toastTimer); window.removeEventListener('beforeunload', beforeUnload); };
   });
   async function saveConfig(next: Config, keys = reminderKeys): Promise<boolean> {
     if (!revision) { configError = 'Configuration revision is missing. Reload before saving.'; return false; }
@@ -120,14 +184,23 @@
     } catch (error) { configError = errorMessage(error); return false; }
     finally { saving = false; }
   }
-  function openEditor(index: number | null) {
+  function openEditor(index: number | null, source: 'reminders' | 'elapsed_reminders' = 'reminders') {
     if (!config || saving || settings || editorActive) return;
+    const legacy = index === null || source !== 'reminders' ? null : config.reminders[index];
+    const elapsed = index === null || source !== 'elapsed_reminders' ? null : config.elapsed_reminders?.[index];
+    if (index !== null && !legacy && !elapsed) return;
     const generation = ++editorGeneration;
     ++editorSession;
     editorActive = true;
     editing = index;
-    draft = index === null ? { kind: 'every', every: '30m', message: '', app: '' } : { ...config.reminders[index], app: config.reminders[index].kind === 'watch' ? config.reminders[index].app : '' };
-    originalDraft = JSON.stringify(draft);
+    editingSource = source;
+    repeatEnabled = !!elapsed?.repeat;
+    draft = elapsed
+      ? { kind: 'elapsed', app: elapsed.app, every: elapsed.after, repeat: elapsed.repeat || '30m', message: elapsed.message, disabled: elapsed.disabled }
+      : legacy
+        ? { kind: legacy.kind, app: legacy.app || '', every: legacy.every, repeat: '30m', message: legacy.message, disabled: legacy.disabled }
+        : { kind: 'every', app: '', every: '30m', repeat: '30m', message: '' };
+    originalDraft = JSON.stringify({ draft, repeatEnabled });
     void loadApps();
     void tick().then(() => {
       if (!editorActive || generation !== editorGeneration || !editorDialog) return;
@@ -153,12 +226,30 @@
   }
   async function saveReminder() {
     if (!config || !draft) return;
-    const reminder = { ...draft, kind: draft.app ? 'watch' as const : 'every' as const };
-    if (!reminder.app) delete reminder.app;
     const reminders = [...config.reminders];
-    if (editing === null) reminders.push(reminder); else reminders[editing] = reminder;
-    const keys = editing === null ? [...reminderKeys, ++nextReminderKey] : reminderKeys;
-    if (await saveConfig({ ...config, reminders }, keys)) {
+    const elapsed = [...(config.elapsed_reminders || [])];
+    const keys = [...reminderKeys];
+    let oldKey: number | undefined;
+    if (editing !== null) {
+      if (editingSource === 'reminders') {
+        reminders.splice(editing, 1);
+        [oldKey] = keys.splice(editing, 1);
+      } else {
+        elapsed.splice(editing, 1);
+      }
+    }
+    if (draft.kind === 'elapsed') {
+      const rule: ElapsedReminder = { app: draft.app, after: draft.every, message: draft.message, disabled: draft.disabled };
+      if (repeatEnabled) rule.repeat = draft.repeat;
+      elapsed.splice(editing !== null && editingSource === 'elapsed_reminders' ? editing : elapsed.length, 0, rule);
+    } else {
+      const rule: Reminder = { kind: draft.kind, every: draft.every, message: draft.message, disabled: draft.disabled };
+      if (draft.kind === 'watch') rule.app = draft.app;
+      const index = editing !== null && editingSource === 'reminders' ? editing : reminders.length;
+      reminders.splice(index, 0, rule);
+      keys.splice(index, 0, oldKey ?? ++nextReminderKey);
+    }
+    if (await saveConfig({ ...config, reminders, elapsed_reminders: elapsed }, keys)) {
       notice = editing === null ? 'Reminder added.' : 'Reminder updated.';
       closeEditor();
     }
@@ -179,7 +270,25 @@
       notice = 'Reminder deleted.';
       await tick();
       const nextKey = keys[Math.min(index, keys.length - 1)];
-      (document.querySelector<HTMLButtonElement>(`[data-reminder-key="${nextKey}"] .reminder-actions button:not(.danger)`) ?? document.querySelector<HTMLButtonElement>('.page-heading .primary'))?.focus();
+      (document.querySelector<HTMLElement>(`[data-reminder-key="${nextKey}"] .rule-menu summary`) ?? document.querySelector<HTMLButtonElement>('.page-heading .primary'))?.focus();
+    }
+  }
+  async function toggleElapsed(index: number, enabled: boolean) {
+    if (!config || saving) return;
+    const previous = config;
+    const elapsed_reminders = (config.elapsed_reminders || []).map((rule, i) => i === index ? { ...rule, disabled: !enabled } : rule);
+    config = { ...config, elapsed_reminders };
+    if (await saveConfig(config)) notice = enabled ? 'Reminder turned on.' : 'Reminder turned off.';
+    else config = previous;
+  }
+  async function deleteElapsed(index: number) {
+    if (!config) return;
+    const rules = config.elapsed_reminders || [];
+    if (!window.confirm(`Delete “${rules[index].message}”? This cannot be undone.`)) return;
+    if (await saveConfig({ ...config, elapsed_reminders: rules.filter((_, i) => i !== index) })) {
+      notice = 'Reminder deleted.';
+      await tick();
+      document.querySelector<HTMLButtonElement>('.page-heading .primary')?.focus();
     }
   }
   function openSettings() {
@@ -254,7 +363,7 @@
   function navigate(next: 'reminders' | 'settings' | 'insights' | 'diagnostics') {
     if (next === page) return;
     if (insightsBusy) return;
-    if (page === 'insights' && insightsDirty && !window.confirm('Discard unsaved history settings?')) return;
+    if (insightsDirty && !window.confirm('Discard unsaved history settings?')) return;
     if ((page === 'reminders' || page === 'settings') && (saving || (dirty && !window.confirm('Discard your unsaved changes?')))) return;
     if (page === 'reminders' || page === 'settings') { ++editorGeneration; editorActive = false; draft = null; settings = null; editing = null; }
     insightsDirty = false;
@@ -264,13 +373,13 @@
 
 <svelte:head><title>Nudge — {page[0].toUpperCase() + page.slice(1)}</title><meta name="description" content="Manage Nudge reminders and insights." /></svelte:head>
 
-<header class="site-header"><div class="brand"><Bell size={20} aria-hidden="true" /><span>nudge</span><nav class="main-nav" aria-label="Main navigation"><button type="button" aria-current={page === 'reminders' ? 'page' : undefined} disabled={insightsBusy} onclick={() => navigate('reminders')}>Reminders</button><button type="button" aria-current={page === 'settings' ? 'page' : undefined} disabled={insightsBusy} onclick={() => navigate('settings')}>Settings</button><button type="button" aria-current={page === 'insights' ? 'page' : undefined} onclick={() => navigate('insights')}>Insights</button><button type="button" aria-current={page === 'diagnostics' ? 'page' : undefined} disabled={insightsBusy} onclick={() => navigate('diagnostics')}>Diagnostics</button></nav></div></header>
+<header class="site-header"><div class="brand"><Bell size={20} aria-hidden="true" /><span>nudge</span><nav class="main-nav" aria-label="Main navigation"><button type="button" aria-current={page === 'reminders' ? 'page' : undefined} disabled={insightsBusy} onclick={() => navigate('reminders')}>Reminders</button><button type="button" aria-current={page === 'insights' ? 'page' : undefined} disabled={insightsBusy} onclick={() => navigate('insights')}>Insights</button><button type="button" aria-current={page === 'settings' || page === 'diagnostics' ? 'page' : undefined} disabled={insightsBusy} onclick={() => navigate('settings')}>Settings</button></nav></div></header>
 <a class="skip-link" href="#main-content">Skip to content</a>
 <main id="main-content" data-page={page}>
   {#if page !== 'insights'}
-  {#if page === 'settings'}<div class="page-heading"><div><h1>Settings</h1><p class="page-intro">Choose when reminders can reach you.</p></div></div>{:else if page === 'diagnostics'}<div class="page-heading"><div><h1>Diagnostics</h1><p class="page-intro">Check the reminder service and its connections.</p></div></div>{/if}
+  {#if page === 'settings'}<div class="page-heading"><div><h1>Settings</h1><p class="page-intro">Choose when reminders can reach you.</p></div></div>{:else if page === 'diagnostics'}<button class="text-button" type="button" onclick={() => navigate('settings')}>Back to Settings</button><div class="page-heading"><div><h1>Diagnostics</h1><p class="page-intro">Check the reminder service and its connections.</p></div></div>{/if}
   {#if page === 'reminders'}
-  <div class="page-heading"><div><p class="eyebrow">A little space for what matters</p><h1>Your reminders</h1><p class="page-intro">Set reminders for any time, or while using a particular app.</p></div><button class="button primary" type="button" onclick={() => openEditor(null)} disabled={!config || saving || !!settings}><Plus size={18} aria-hidden="true" /> Add reminder</button></div>
+  <div class="page-heading"><div><p class="eyebrow">A moment of intention</p><h1>Reminders</h1></div><button class="button primary" type="button" onclick={() => openEditor(null)} disabled={!config || saving || !!settings}><Plus size={18} aria-hidden="true" /> Add reminder</button></div>
   <div class="sr-only" role="status" aria-atomic="true">{notice}</div>
   {#if configError}<div class="feedback error" role="alert"><span>Could not save or load reminders: {configError}</span><button class="text-button" type="button" onclick={reloadConfig}>Reload saved configuration</button></div>{/if}
 
@@ -286,11 +395,14 @@
   {#if page === 'settings'}
     <section class="appearance" aria-labelledby="appearance-title">
       <h2 id="appearance-title">Appearance</h2>
-      <label for="theme">Theme</label>
-      <select id="theme" value={theme} onchange={changeTheme}>
-        <option value="forest">Nudge Forest · follows system appearance</option>
-        <option value="mocha">Catppuccin Mocha Lavender</option>
-      </select>
+      <h3>Color theme</h3>
+      <div class="theme-gallery" role="group" aria-label="Theme">
+        {#each themes as option}
+          <button type="button" class="theme-choice" aria-pressed={theme === option.id} onclick={() => changeTheme(option.id)}>
+            <span class={`theme-swatch ${option.id}`} aria-hidden="true"></span><span>{option.label}</span>
+          </button>
+        {/each}
+      </div>
       <p class="help">Saved on this device for this interface.</p>
       {#if themeError}<p class="feedback error" role="alert">{themeError}</p>{/if}
     </section>
@@ -301,13 +413,27 @@
 
 
   <section class="reminders" aria-labelledby="reminders-heading">
-    <div class="section-heading"><h2 id="reminders-heading">All reminders</h2>{#if config}<span>{config.reminders.filter(rule => !rule.disabled).length} enabled · {config.reminders.length} total</span>{/if}</div>
+    <div class="section-heading"><h2 id="reminders-heading">Your reminders</h2>{#if config}<span>{config.reminders.filter(rule => !rule.disabled).length + (config.elapsed_reminders || []).filter(rule => !rule.disabled).length} enabled · {config.reminders.length + (config.elapsed_reminders || []).length} total</span>{/if}</div>
     {#if !config}<div class="empty">{loading ? 'Loading reminders…' : 'Your reminders could not be loaded.'}</div>
     {:else}<div class="reminder-list">{#each config.reminders as rule, index (reminderKeys[index])}
-      <article class="reminder" class:disabled={rule.disabled} data-reminder-key={reminderKeys[index]} transition:slide={{ duration: prefersReducedMotion.current ? 0 : 170, easing: cubicOut }} onfocusin={(event) => { event.currentTarget.getAnimations().forEach((animation) => animation.finish()); }} onoutrostart={(event) => { event.currentTarget.inert = true; event.currentTarget.classList.add('leaving'); }}><div class="reminder-info"><span class="reminder-icon" aria-hidden="true">{#if rule.kind === 'watch'}<AppWindow size={19} />{:else}<Timer size={19} />{/if}</span><div class="reminder-copy"><h3>{rule.message}</h3><p>Every {formatInterval(rule.every)} · {rule.kind === 'watch' ? `While using ${appName(rule.app || '')}` : 'Any app'}</p></div></div><div class="reminder-actions"><label class="switch-label"><input type="checkbox" role="switch" checked={!rule.disabled} onchange={(event) => { if (saving) event.currentTarget.checked = !event.currentTarget.checked; else void toggleReminder(index, event.currentTarget.checked); }} disabled={editorActive || !!settings} aria-disabled={saving} aria-label={`Reminders for ${rule.message}`} /><span>{rule.disabled ? 'Off' : 'On'}</span></label><button class="button quiet" type="button" onclick={() => openEditor(index)} disabled={saving || !!settings}>Edit<span class="sr-only"> {rule.message}</span></button><button class="button quiet danger" type="button" onclick={() => deleteReminder(index)} disabled={saving || editorActive || !!settings}>Delete<span class="sr-only"> {rule.message}</span></button></div></article>
-    {/each}</div>{#if config.reminders.length === 0}<div class="empty"><Bell size={22} aria-hidden="true" /><div><strong>No reminders yet</strong><p>Choose what to remember and how often. You can even choose a particular app.</p></div></div>{/if}{/if}
+      <article class="reminder" class:disabled={rule.disabled} data-reminder-key={reminderKeys[index]} transition:slide={{ duration: prefersReducedMotion.current ? 0 : 170, easing: cubicOut }} onfocusin={(event) => { event.currentTarget.getAnimations().forEach((animation) => animation.finish()); }} onoutrostart={(event) => { event.currentTarget.inert = true; event.currentTarget.classList.add('leaving'); }}>
+        <div class="reminder-info"><span class="reminder-icon" aria-hidden="true">{#if rule.kind === 'watch'}<AppWindow size={19} />{:else}<Timer size={19} />{/if}</span><div class="reminder-copy"><h3>{rule.message}</h3><p>{rule.kind === 'watch' ? `On focus, then every ${formatInterval(rule.every)} · ${appName(rule.app || '')}` : `Every ${formatInterval(rule.every)} · Any app`}</p></div></div>
+        <div class="reminder-actions">
+          <label class="switch-label"><input type="checkbox" role="switch" checked={!rule.disabled} onchange={(event) => { if (saving) event.currentTarget.checked = !event.currentTarget.checked; else void toggleReminder(index, event.currentTarget.checked); }} disabled={editorActive || !!settings} aria-disabled={saving} aria-label={`Reminders for ${rule.message}`} /><span>{rule.disabled ? 'Off' : 'On'}</span></label>
+          <details class="rule-menu"><summary aria-label={`Actions for ${rule.message}`} onkeydown={pauseMenuKeydown}>···</summary><div><button class="button quiet" type="button" onkeydown={pauseMenuKeydown} onclick={() => openEditor(index)} disabled={saving || !!settings}>Edit<span class="sr-only"> {rule.message}</span></button><button class="button quiet danger" type="button" onkeydown={pauseMenuKeydown} onclick={() => deleteReminder(index)} disabled={saving || editorActive || !!settings}>Delete<span class="sr-only"> {rule.message}</span></button></div></details>
+        </div>
+      </article>
+    {/each}
+    {#each config.elapsed_reminders || [] as rule, index}
+      <article class="reminder" class:disabled={rule.disabled}>
+        <div class="reminder-info"><span class="reminder-icon" aria-hidden="true"><Timer size={19} /></span><div class="reminder-copy"><h3>{rule.message}</h3><p>After {formatInterval(rule.after)} of observed focus · {appName(rule.app)}{rule.repeat ? ` · Repeats every ${formatInterval(rule.repeat)}` : ''}</p></div></div>
+        <div class="reminder-actions">
+          <label class="switch-label"><input type="checkbox" role="switch" checked={!rule.disabled} onchange={(event) => { if (saving) event.currentTarget.checked = !event.currentTarget.checked; else void toggleElapsed(index, event.currentTarget.checked); }} disabled={editorActive || !!settings} aria-disabled={saving} aria-label={`Reminders for ${rule.message}`} /><span>{rule.disabled ? 'Off' : 'On'}</span></label>
+          <details class="rule-menu"><summary aria-label={`Actions for ${rule.message}`} onkeydown={pauseMenuKeydown}>···</summary><div><button class="button quiet" type="button" onkeydown={pauseMenuKeydown} onclick={() => openEditor(index, 'elapsed_reminders')} disabled={saving || !!settings}>Edit<span class="sr-only"> {rule.message}</span></button><button class="button quiet danger" type="button" onkeydown={pauseMenuKeydown} onclick={() => deleteElapsed(index)} disabled={saving || editorActive || !!settings}>Delete<span class="sr-only"> {rule.message}</span></button></div></details>
+        </div>
+      </article>
+    {/each}</div>{#if config.reminders.length === 0 && !(config.elapsed_reminders || []).length}<div class="empty"><Bell size={22} aria-hidden="true" /><div><strong>No reminders yet</strong><p>Choose what to remember and how often. You can even choose a particular app.</p></div></div>{/if}{/if}
   </section>
-  <details class="why-missing"><summary>Why might I not see a reminder?</summary><p>Check that the reminder is on and that Nudge isn’t paused or in quiet hours. App-specific reminders only run while that app is focused. The time between notifications can also delay a reminder.</p><p>Your desktop’s notification settings, including Do Not Disturb, can hide notifications even when Nudge sends them.</p></details>
   </div>
   {/if}
   <aside class="workspace-side" aria-label={page === 'settings' ? 'Settings' : 'Diagnostics'}>
@@ -315,19 +441,39 @@
   <details class="disclosure"><summary><span><strong>Diagnostics</strong><small>Connection and service details</small></span><ChevronDown size={18} aria-hidden="true" /></summary><div class="disclosure-content">{#if diagnosticsError}<p role="alert">{diagnosticsError} <button class="text-button" type="button" onclick={loadDiagnostics}>Try again</button></p>{/if}{#if diagnostics}<dl><div><dt>Notification executable <small>Availability only; delivery is not verified.</small></dt><dd>{diagnostics.notification_available ? 'Available' : 'Unavailable'}</dd></div><div><dt>Niri connection</dt><dd>{diagnostics.niri_error || 'No errors reported'}</dd></div><div><dt>Configuration</dt><dd>{diagnostics.config_error || 'No errors reported'}</dd></div><div><dt>Scheduler</dt><dd>{status?.scheduler_error || (status ? 'No errors reported' : 'Unavailable')}</dd></div><div><dt>Focused app</dt><dd>{!status?.focus_known ? 'Unavailable' : status.focused_app || 'No app focused'}</dd></div><div><dt>Next reminder</dt><dd>{status ? formatDate(status.next_reminder) : 'Unavailable'}<small>{status?.next_description}</small></dd></div><div><dt>Matching reminders</dt><dd>{status?.matching_rules_known ? status.active_rules.join(', ') || 'None' : 'Unavailable'}</dd></div><div><dt>Version</dt><dd>{diagnostics.version || 'Unknown'}</dd></div></dl>{:else if !diagnosticsError}<p>Loading diagnostics…</p>{/if}<button class="button quiet" type="button" onclick={() => { void loadStatus(); void loadDiagnostics(); void loadApps(); }}>Refresh diagnostics</button></div></details></div>
   </aside>
   </div>
+  {#if page === 'settings'}
+    <Insights mode="settings" onOpenSettings={() => navigate('settings')} onDirtyChange={(value, busy) => { insightsDirty = value; insightsBusy = busy; }} />
+    <section class="support"><h2>Support</h2><button class="button secondary" type="button" onclick={() => navigate('diagnostics')} disabled={insightsBusy}>Open diagnostics</button></section>
+  {/if}
 
-  {#if draft}<dialog class="editor" bind:this={editorDialog} inert={!editorActive} aria-labelledby="editor-heading" oncancel={(event) => { event.preventDefault(); cancelEditor(); }} onclick={(event) => { if (editorDialog && event.target === editorDialog) { const rect = editorDialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) cancelEditor(); } }}><div class="editor-heading"><h2 id="editor-heading">{editing === null ? 'New reminder' : 'Edit reminder'}</h2></div>{#key editorSession}<form onsubmit={(event) => { event.preventDefault(); void saveReminder(); }}>
+  {#if draft}<dialog class="editor" bind:this={editorDialog} inert={!editorActive} aria-labelledby="editor-heading" oncancel={(event) => { event.preventDefault(); cancelEditor(); }} onclick={(event) => { if (editorDialog && event.target === editorDialog) { const rect = editorDialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) cancelEditor(); } }}><div class="editor-heading"><h2 id="editor-heading">{editing === null ? 'Add reminder' : 'Edit reminder'}</h2><button class="button quiet editor-close" type="button" onclick={cancelEditor} disabled={saving} aria-label="Close editor"><X size={18} aria-hidden="true" /></button></div>{#key editorSession}<form onsubmit={(event) => { event.preventDefault(); void saveReminder(); }}>
     {#if configError}<div class="feedback error" role="alert"><span>Could not save reminder: {configError}</span><button class="text-button" type="button" onclick={reloadConfig} disabled={saving}>Reload saved configuration</button></div>{/if}
-    <div class="editor-section"><span class="editor-number" aria-hidden="true">01</span><div><label for="message">What would you like to remember?</label><input id="message" bind:value={draft.message} required placeholder="Take a break" /></div></div>
-    <div class="editor-section"><span class="editor-number" aria-hidden="true">02</span><div><label for="frequency">How often?</label><Interval id="frequency" bind:value={draft.every} /><p class="help">The shared cooldown and quiet hours can delay reminders.</p></div></div>
-    <div class="editor-section"><span class="editor-number" aria-hidden="true">03</span><div><label for="app-choice">Where?</label><select id="app-choice" bind:value={draft.app}><option value="">Any app</option>{#if draft.app && !apps.some(app => app.id === draft?.app)}<option value={draft.app}>{appName(draft.app)} (not currently open)</option>{/if}{#each apps as app}<option value={app.id}>{app.name}</option>{/each}</select>
-    {#if appsError}<p class="help">Open apps are unavailable. You can enter an app ID below.</p>{:else if apps.length === 0}<p class="help">No open apps found. You can enter an app ID below.</p>{/if}
-    <details class="advanced"><summary>Enter an app ID</summary><label for="app-id">App ID</label><input id="app-id" bind:value={draft.app} placeholder="e.g. firefox" /><p class="help">Leave blank to remind you in any app. App IDs are saved exactly as entered.</p></details></div></div>
+    <div class="editor-section"><span class="editor-number" aria-hidden="true">01</span><div><label for="message">What would you like to remember?</label><textarea id="message" bind:value={draft.message} rows="3" required placeholder="Take a break"></textarea></div></div>
+    <fieldset class="editor-types"><legend>When should it remind you?</legend>
+      <label><input type="radio" name="kind" value="every" bind:group={draft.kind} /> <span>Every so often<small>At a recurring interval, regardless of the app.</small></span></label>
+      <label><input type="radio" name="kind" value="watch" bind:group={draft.kind} /> <span>While using an app<small>On focus, then at intervals while it remains focused.</small></span></label>
+      <label><input type="radio" name="kind" value="elapsed" bind:group={draft.kind} /> <span>After time in an app<small>After an observed foreground session reaches a threshold.</small></span></label>
+    </fieldset>
+    {#if draft.kind !== 'every'}
+      <div class="editor-section"><span class="editor-number" aria-hidden="true">02</span><div><label for="app-id">Application ID</label><input id="app-id" bind:value={draft.app} list="open-apps" required placeholder="e.g. firefox" /><datalist id="open-apps">{#each apps as app}<option value={app.id}>{app.name}</option>{/each}</datalist>{#if appsError}<p class="help">Open apps are unavailable. Enter an application ID.</p>{/if}</div></div>
+    {/if}
+    <div class="editor-section"><span class="editor-number" aria-hidden="true">03</span><div><label for="frequency">{draft.kind === 'elapsed' ? 'Observed focus threshold' : 'How often?'}</label><Interval id="frequency" bind:value={draft.every} /><p class="help">The shared cooldown and quiet hours can delay reminders.{draft.kind === 'elapsed' ? ' Focus is not verified active use.' : ''}</p></div></div>
+    {#if draft.kind === 'elapsed'}
+      <div class="editor-section"><span class="editor-number" aria-hidden="true">04</span><div><label><input type="checkbox" bind:checked={repeatEnabled} /> Repeat after the first reminder</label>{#if repeatEnabled}<label for="repeat-frequency">Repeat interval</label><Interval id="repeat-frequency" bind:value={draft.repeat} />{/if}</div></div>
+    {/if}
     <div class="form-actions"><button class="button quiet" type="button" onclick={cancelEditor} disabled={saving}>Cancel</button><button class="button primary" type="submit" disabled={saving}>{saving ? 'Saving…' : editing === null ? 'Add reminder' : 'Save changes'}</button></div>
   </form>{/key}</dialog>{/if}
 
   {:else}
-    <Insights onDirtyChange={(value, busy) => { insightsDirty = value; insightsBusy = busy; }} />
+    <Insights onOpenSettings={() => navigate('settings')} onDirtyChange={(value, busy) => { insightsDirty = value; insightsBusy = busy; }} />
   {/if}
-  <footer>Nudge · A local reminder service</footer>
 </main>
+<div class="toast-region" aria-live="polite" aria-atomic="true">
+  {#if toast}
+    <aside class="reminder-toast" aria-label="Reminder">
+      <div class="toast-content"><span class="toast-icon" aria-hidden="true"><Bell size={17} /></span><div><p class="toast-kicker">Nudge · reminder</p><strong>{toast.title}</strong><p>{toast.body}</p></div></div>
+      {#if toastError}<p class="toast-error" role="alert">{toastError}</p>{/if}
+      <div class="toast-actions"><button type="button" onclick={() => actOnToast('snooze')} disabled={toastBusy} aria-label="Snooze all reminders for 5 minutes">Snooze 5 min</button><button type="button" onclick={() => actOnToast('dismiss')} disabled={toastBusy}>Dismiss</button></div>
+    </aside>
+  {/if}
+</div>
