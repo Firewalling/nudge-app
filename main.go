@@ -25,13 +25,21 @@ type Reminder struct {
 	Disabled bool      `json:"disabled,omitempty"`
 	Last     time.Time `json:"last,omitempty"`
 }
+type ElapsedReminder struct {
+	App      string `json:"app"`
+	After    string `json:"after"`
+	Repeat   string `json:"repeat,omitempty"`
+	Message  string `json:"message"`
+	Disabled bool   `json:"disabled,omitempty"`
+}
 type Config struct {
-	Reminders        []Reminder `json:"reminders"`
-	PausedUntil      time.Time  `json:"paused_until,omitempty"`
-	Cooldown         string     `json:"cooldown,omitempty"`
-	QuietStart       string     `json:"quiet_start,omitempty"`
-	QuietEnd         string     `json:"quiet_end,omitempty"`
-	LastNotification time.Time  `json:"last_notification,omitempty"`
+	Reminders        []Reminder        `json:"reminders"`
+	ElapsedReminders []ElapsedReminder `json:"elapsed_reminders,omitempty"`
+	PausedUntil      time.Time         `json:"paused_until,omitempty"`
+	Cooldown         string            `json:"cooldown,omitempty"`
+	QuietStart       string            `json:"quiet_start,omitempty"`
+	QuietEnd         string            `json:"quiet_end,omitempty"`
+	LastNotification time.Time         `json:"last_notification,omitempty"`
 }
 type focusedWindowInfo struct {
 	AppID string `json:"app_id"`
@@ -138,16 +146,20 @@ func watchReminderDue(r Reminder, app string, now time.Time, s *watchSession) bo
 	d, e := duration(r.Every)
 	return e == nil && now.Sub(s.lastSent) >= d
 }
-func notify(m string) error {
+func notify(title, m string) error {
 	if _, e := exec.LookPath("notify-send"); e != nil {
 		return fmt.Errorf("notify-send is required: %w", e)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if e := exec.CommandContext(ctx, "notify-send", "Nudge", m).Run(); e != nil {
+	if e := exec.CommandContext(ctx, "notify-send", title, m).Run(); e != nil {
 		return fmt.Errorf("send desktop notification: %w", e)
 	}
 	return nil
+}
+
+func deliverReminder(runtime *schedulerState, foreground bool, title, body, native string) error {
+	return runtime.toasts.deliver(foreground, title, body, native, 2*time.Second, func(nativeTitle string) error { return notify(nativeTitle, body) })
 }
 func parseFocusedWindow(raw []byte) (focusedWindowInfo, bool, error) {
 	if strings.TrimSpace(string(raw)) == "null" {
@@ -214,10 +226,12 @@ func runDaemon() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	wake := make(chan struct{}, 1)
-	var disconnects atomic.Uint64
+	var focusGeneration atomic.Uint64
 	var connected atomic.Bool
-	go watchNiri(ctx, wake, &disconnects, &connected)
+	go watchNiri(ctx, wake, &focusGeneration, &connected)
 	sessions := map[int]watchSession{}
+	elapsedSessions := map[int]elapsedSession{}
+	var previousElapsed string
 	var previousRules string
 	suppressed := map[int]string{}
 	var observation focusObservation
@@ -229,6 +243,9 @@ func runDaemon() error {
 			return nil
 		case <-t.C:
 		case <-wake:
+		}
+		if err := runtime.toasts.expire(time.Now()); err != nil {
+			fmt.Fprintf(os.Stderr, "nudge: %v\n", err)
 		}
 		unlock, err := lockConfig()
 		if err != nil {
@@ -257,8 +274,13 @@ func runDaemon() error {
 			previousRules = string(rulesJSON)
 			suppressed = map[int]string{}
 		}
+		elapsedJSON, _ := json.Marshal(c.ElapsedReminders)
+		if string(elapsedJSON) != previousElapsed {
+			elapsedSessions = map[int]elapsedSession{}
+			previousElapsed = string(elapsedJSON)
+		}
 		app, found, focusErr := focusedWindow()
-		generation := disconnects.Load()
+		generation := focusGeneration.Load()
 		validFocus := connected.Load() && focusErr == nil && found && validateAppID(app.AppID) == nil
 		if event, ok := observation.observe(now, app.AppID, validFocus, generation); ok {
 			recorder.record(event)
@@ -305,7 +327,11 @@ func runDaemon() error {
 				continue
 			}
 			delete(suppressed, i)
-			err := notify(r.Message)
+			foreground := validFocus && strings.EqualFold(app.AppID, "org.wails.nudge") && connected.Load() && focusGeneration.Load() == generation
+			err := deliverReminder(runtime, foreground, "Nudge reminder", r.Message, "Nudge")
+			if errors.Is(err, errToastBusy) {
+				continue
+			}
 			kind := "attempt"
 			if err != nil {
 				kind = "failure"
@@ -327,6 +353,37 @@ func runDaemon() error {
 			c.LastNotification = now
 			allowed = false
 			changed = true
+		}
+		for i, rule := range c.ElapsedReminders {
+			if rule.Disabled {
+				delete(elapsedSessions, i)
+				continue
+			}
+			session := elapsedSessions[i]
+			session.observe(now, app.AppID, rule.App, validFocus, generation)
+			if session.eligible(rule, paused, quiet, allowed) && connected.Load() && focusGeneration.Load() == generation {
+				foreground := strings.EqualFold(app.AppID, "org.wails.nudge")
+				title := elapsedTitle(rule, session.observed)
+				err := deliverReminder(runtime, foreground, title, rule.Message, title)
+				if errors.Is(err, errToastBusy) {
+					elapsedSessions[i] = session
+					continue
+				}
+				kind := "attempt"
+				if err != nil {
+					kind = "failure"
+					schedulerErr = err.Error()
+					fmt.Fprintf(os.Stderr, "nudge: %v\n", err)
+				} else {
+					session.sent = true
+					session.sentAt = session.observed
+					c.LastNotification = now
+					allowed = false
+					changed = true
+				}
+				recorder.record(insightEvent{at: now, kind: kind, app: rule.App})
+			}
+			elapsedSessions[i] = session
 		}
 		if paused || quiet {
 			sessions = map[int]watchSession{}
@@ -394,7 +451,7 @@ func run(a []string) error {
 		if len(a) < 2 {
 			return errors.New("usage: nudge now MESSAGE")
 		}
-		err := notify(strings.Join(a[1:], " "))
+		err := notify("Nudge", strings.Join(a[1:], " "))
 		kind := "attempt"
 		if err != nil {
 			kind = "failure"

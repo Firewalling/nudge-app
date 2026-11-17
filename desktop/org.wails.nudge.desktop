@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Nudge
+Comment=Gentle reminders for intentional days
+Exec=nudge-desktop
+Icon=org.wails.nudge
+Terminal=false
+Categories=Utility;
+StartupWMClass=org.wails.nudge

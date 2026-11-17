@@ -10,7 +10,7 @@ import (
 )
 
 // watchNiri wakes the scheduler on window events and reconnects after IPC loss.
-func watchNiri(ctx context.Context, wake chan<- struct{}, disconnects *atomic.Uint64, connected *atomic.Bool) {
+func watchNiri(ctx context.Context, wake chan<- struct{}, focusGeneration *atomic.Uint64, connected *atomic.Bool) {
 	for ctx.Err() == nil {
 		cmd := exec.CommandContext(ctx, "niri", "msg", "--json", "event-stream")
 		out, err := cmd.StdoutPipe()
@@ -27,18 +27,21 @@ func watchNiri(ctx context.Context, wake chan<- struct{}, disconnects *atomic.Ui
 					continue
 				}
 				if _, ok := event["WindowFocusChanged"]; ok {
+					focusGeneration.Add(1)
 					select {
 					case wake <- struct{}{}:
 					default:
 					}
 				}
 				if _, ok := event["WindowsChanged"]; ok {
+					focusGeneration.Add(1)
 					select {
 					case wake <- struct{}{}:
 					default:
 					}
 				}
 				if _, ok := event["WindowClosed"]; ok {
+					focusGeneration.Add(1)
 					select {
 					case wake <- struct{}{}:
 					default:
@@ -46,7 +49,7 @@ func watchNiri(ctx context.Context, wake chan<- struct{}, disconnects *atomic.Ui
 				}
 			}
 			connected.Store(false)
-			disconnects.Add(1)
+			focusGeneration.Add(1)
 			_ = cmd.Wait()
 			select {
 			case wake <- struct{}{}:

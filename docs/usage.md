@@ -30,21 +30,47 @@ Durations use positive Go duration syntax, such as `30s`, `15m`, and `1h`. App I
 
 The JSON configuration lives at `$XDG_CONFIG_HOME/nudge/config.json`, or `~/.config/nudge/config.json` when `XDG_CONFIG_HOME` is unset. When absent, Nudge starts with an empty reminder list and a five-minute cooldown. [config.example.json](../config.example.json) shows periodic and watched rules; it is not installed automatically. The CLI and dashboard write the same file using a shared lock and atomic rename. Avoid manually editing it while Nudge is writing.
 
-In the dashboard, **Add Reminder** creates a reminder directly. Choose **Any app** or an open application under **Only while using**; if an application is not open, its Niri app ID can be entered under **Advanced**. Open applications are suggestions, not a complete list of installed software. A watched app means a focused window with that app ID, not verified active use.
+In the dashboard, **Add reminder** creates a periodic, watched-app or **Usage Breaker** reminder. Usage Breaker edits the existing elapsed-session rules: it defaults to a ten-minute threshold and one reminder per observed foreground session. Its preview shows an example at the configured threshold; delivery shows the actual observed duration. Enter the Niri app ID for watched and Usage Breaker rules; open applications are offered as suggestions, not a complete list of installed software. A watched app means a focused window with that app ID, not verified active use.
+
+The reminder list shows how many are enabled; each row has an on/off switch and an actions menu. Switches respond immediately and return to their previous state if saving fails. Reminder changes are reflected in the list and announced to assistive technology; errors remain visible. The editor opens in a centered dialog. Press Escape to dismiss it (Nudge asks before discarding unsaved changes). Diagnostics is available under Settings → Support. Leaving Settings while editing asks before discarding changes. Motion follows the system's reduced-motion preference.
+
+Settings → Appearance offers Nudge Forest, Catppuccin Mocha Lavender, Catppuccin Latte, Nord, Rosé Pine, Tokyo Night and Gruvbox Dark. Nudge Forest follows the system light or dark preference. The choice is stored locally by each browser or desktop WebView, independently of the daemon configuration.
+
+If Nudge cannot detect the focused app while an app-specific reminder is enabled, its status calls this out; Diagnostics has connection details. Desktop notification settings, including Do Not Disturb, can hide a notification even when Nudge sends it.
+
+Use **Pause reminders** beside the status to choose a duration; **Resume reminders** ends the pause early. Escape closes the pause menu and returns focus to its control.
+
+When the desktop window is focused, Nudge can show one persistent in-app reminder. **Snooze 5 min** pauses all reminders for five minutes; **Dismiss** clears that reminder. Further foreground reminders wait until the current one is handled. While the editor is open, or if the window is closed, backgrounded, disconnected or cannot claim the reminder, the daemon uses a native desktop notification instead. An in-app reminder abandoned when the window becomes unavailable is transferred to native notification after the desktop heartbeat expires.
 
 A reminder has `kind` (`every` or `watch`), positive duration `every`, and `message`; `watch` also needs an `app` ID. `disabled: true` skips a rule. `cooldown` is a positive duration shared by scheduled notifications. Optional `quiet_start` and `quiet_end` must both be set to different local times in `HH:MM` format; the interval may cross midnight. API validation permits up to 500 rules and messages of 1–4096 bytes with non-whitespace content. `paused_until`, `last_notification`, and each rule's `last` are state maintained by Nudge. Use the dashboard to edit and remove rules, cooldown and quiet hours.
 
 Niri window events wake the scheduler, and a five-second timer checks due reminders and recovers from missed events. A watched app is eligible immediately on focus, then repeats during continuous focus; its interval is not an initial waiting period. Periodic reminders are eligible when due; a new periodic rule is initially due. The shared cooldown, pause and quiet hours can delay scheduling. Due times shown in the dashboard are estimates, not delivery guarantees; eligibility also depends on focus and notification success.
 
+Elapsed-session reminders are configured separately from watched rules in the JSON configuration (or through the configuration API):
+
+```json
+{
+  "reminders": [],
+  "cooldown": "5m",
+  "elapsed_reminders": [
+    { "app": "brave", "after": "20m", "repeat": "20m", "message": "Still doing what you intended?" }
+  ]
+}
+```
+
+`after` is the first threshold; omit `repeat` for one notification per session, or set it to a positive duration for further notifications. Set `disabled` to `true` to turn a rule off. The dashboard can create and edit these rules alongside periodic and watched reminders. The daemon counts only short, consistent Niri focus observations and resets when focus changes, the stream disconnects, or observations have an uncertain gap. The notification title shows the measured observed duration and app name, not the configured threshold. Pause, snooze, quiet hours and the shared cooldown suppress delivery. The elapsed timer is in memory and does not require Insights history.
+
+Nudge does not currently have a reliable idle-input source: uninterrupted observed focus can include time away from the computer. The duration is observed foreground time, not verified active use. Long sleeps, delayed observations, clock drift or connection loss reset the session instead of filling the gap. The dashboard's next-reminder estimate does not include elapsed rules.
+
 The dashboard binds only to IPv4 loopback on port 8788. Set `NUDGE_PORT` to a port from 1 to 65535 to change it; use the same value for `nudge web`. Set `XDG_CONFIG_HOME` to a separate directory for an isolated configuration. If the dashboard port is occupied, the daemon logs the error and continues scheduling without the dashboard.
 
 ## Insights and privacy
 
-Insights is optional and stays on this computer. **Record reminder history** is off by default; turn it on in Insights to record new events. **Record app activity** is a separate, initially disabled choice and only records when reminder history is on. Retention defaults to 30 days and can be changed in the same view. Turning recording off keeps existing history; **Delete all history** removes recorded events without changing reminders or history settings.
+Insights is optional and stays on this computer. **Record reminder history** is off by default; turn it on under Settings → History and privacy to record new events. **Record app activity** is a separate, initially disabled choice and only records when reminder history is on. Retention defaults to 30 days and can be changed in the same view. Turning recording off keeps existing history; **Delete all history** removes recorded events without changing reminders or history settings.
 
-History and its settings are stored in a SQLite database at `$XDG_DATA_HOME/nudge/history.db`, or `~/.local/share/nudge/history.db` when `XDG_DATA_HOME` is unset. The database can be created even when recording is off. When history is enabled, Nudge records notification command attempts (including failures), pause, resume and snooze actions, and a suppression when an otherwise-due reminder is held by pause, quiet hours or cooldown. Suppressions are deduplicated while the same rule remains due for the same reason in a running daemon. A restart or rule change begins a new observation.
+History and its settings are stored in a SQLite database at `$XDG_DATA_HOME/nudge/history.db`, or `~/.local/share/nudge/history.db` when `XDG_DATA_HOME` is unset. The database can be created even when recording is off. When history is enabled, Nudge records reminder delivery attempts (including native notification failures and in-app claims), pause, resume and snooze actions, and a suppression when an otherwise-due reminder is held by pause, quiet hours or cooldown. Suppressions are deduplicated while the same rule remains due for the same reason in a running daemon. A restart or rule change begins a new observation.
 
-If app activity is enabled, app-specific reminder events can include the app ID, and Nudge records short, consistently observed foreground-window intervals. Foreground time is not proof of active use. Focus changes between observations, sleep, disconnects, crashes, clock changes, short intervals and disabled recording can leave gaps; durations are recorded in whole seconds. Unsafe app IDs that resemble paths, URLs or free text are omitted. Window titles, reminder messages and URLs are not stored.
+If app activity is enabled, app-specific reminder events can include the app ID, and Nudge records short, consistently observed foreground-window intervals. Foreground time is not proof of active use. Niri focus or window-list changes invalidate the interval between observations, even if focus returns to the same app. Sleep, disconnects, crashes, clock changes, short intervals and disabled recording can also leave gaps; durations are recorded in whole seconds. Unsafe app IDs that resemble paths, URLs or free text are omitted. Window titles, reminder messages and URLs are not stored.
 
 Insights groups event times by local day and hour. A notification attempt does not establish that a notification was displayed or read. Nudge prunes expired records automatically. Clearing history uses SQLite secure deletion, checkpoints its write-ahead log and vacuums the database; this does not guarantee erasure from filesystem snapshots, backups or storage-device copies. New events may be recorded after deletion if history remains enabled.
 
