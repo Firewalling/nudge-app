@@ -56,14 +56,24 @@ func (s elapsedSession) eligible(rule ElapsedReminder, paused, quiet, allowed bo
 }
 
 func elapsedTitle(rule ElapsedReminder, observed time.Duration) string {
-	amount := int64(observed / time.Second)
-	unit := "second"
-	if observed >= time.Minute {
-		amount = int64(observed / time.Minute)
-		unit = "minute"
+	seconds := int64(observed / time.Second)
+	duration := ""
+	if minutes := seconds / 60; minutes > 0 {
+		unit := "minutes"
+		if minutes == 1 {
+			unit = "minute"
+		}
+		duration = fmt.Sprintf("%d %s", minutes, unit)
 	}
-	if amount != 1 {
-		unit += "s"
+	if remainder := seconds % 60; remainder > 0 || duration == "" {
+		unit := "seconds"
+		if remainder == 1 {
+			unit = "second"
+		}
+		if duration != "" {
+			duration += " "
+		}
+		duration += fmt.Sprintf("%d %s", remainder, unit)
 	}
-	return fmt.Sprintf("%d %s in %s", amount, unit, appName(rule.App))
+	return fmt.Sprintf("%s in %s", duration, appName(rule.App))
 }

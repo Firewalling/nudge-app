@@ -238,6 +238,8 @@ dd { margin: 0; overflow-wrap: anywhere; color: var(--muted); }
 dialog.editor { position: fixed; inset: 0; width: min(540px, calc(100% - 24px)); max-width: none; max-height: min(calc(100vh - 24px), calc(100dvh - 24px)); margin: auto; padding: 0; overflow: hidden; color: var(--foreground); background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 20px 70px #0005; }
 dialog.editor[open] { display: flex; flex-direction: column; }
 dialog.editor > form { min-height: 0; max-width: none; overflow-y: auto; overscroll-behavior: contain; padding: 0 24px; }
+dialog.editor > form { scroll-padding-bottom: 100px; }
+dialog.editor :focus-visible { scroll-margin-bottom: 100px; }
 dialog.editor h2 { font-size: 1.55rem; letter-spacing: -.035em; }
 .editor-heading { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 24px; border-bottom: 1px solid var(--border); }
 .editor-close { width: 44px; padding: 0; }
@@ -255,6 +257,23 @@ dialog.editor h2 { font-size: 1.55rem; letter-spacing: -.035em; }
 .editor-types span { font-weight: 700; }
 .editor-types small { display: block; color: var(--muted); font-weight: 400; margin-top: 3px; }
 .editor .form-actions { position: sticky; bottom: 0; border-top: 1px solid var(--border); padding: 20px 0; background: var(--surface); }
+dialog.editor.usage-editor { width: min(880px, calc(100% - 24px)); }
+.usage-editor .editor-types { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.usage-editor .editor-types label { margin: 0; }
+.usage-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+.usage-fields { min-width: 0; }
+.usage-preview { display: grid; gap: 24px; min-width: 0; margin-top: 20px; padding: 24px; border: 1px solid var(--border); border-radius: 14px; background: var(--background); }
+.usage-preview h3 { margin: 8px 0 4px; font-size: 1.15rem; }
+.usage-preview > div > p, .usage-preview-note { color: var(--muted); font-size: .875rem; }
+.usage-preview-card { display: flex; align-items: flex-start; gap: 12px; min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--raised); overflow-wrap: anywhere; }
+.usage-preview-card > div { flex: 1; min-width: 0; }
+.usage-preview-card p { color: var(--muted); margin-top: 5px; font-size: .9rem; }
+.usage-preview-card > svg { flex: none; color: var(--muted); }
+.usage-preview-icon { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border-radius: 9px; background: var(--surface); color: var(--accent); }
+@media (max-width: 700px) {
+  .usage-editor .editor-types, .usage-layout { grid-template-columns: 1fr; }
+  .usage-layout { gap: 0; }
+}
 dialog.editor::backdrop { background: #101b17a6; }
 @supports (transition-behavior: allow-discrete) and (overlay: auto) {
   dialog.editor {

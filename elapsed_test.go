@@ -108,6 +108,9 @@ func TestElapsedNotificationUsesObservedDuration(t *testing.T) {
 	}
 	t.Setenv("PATH", dir)
 	rule := ElapsedReminder{App: "brave", After: "20m", Message: "Still doing what you intended?"}
+	if got := elapsedTitle(rule, 10*time.Minute+5*time.Second); got != "10 minutes 5 seconds in Brave" {
+		t.Fatalf("observed duration = %q", got)
+	}
 	title := elapsedTitle(rule, 25*time.Minute)
 	if err := notify(title, rule.Message); err != nil {
 		t.Fatal(err)

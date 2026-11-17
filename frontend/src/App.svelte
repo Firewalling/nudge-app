@@ -62,6 +62,7 @@
   let editing = $state<number | null>(null);
   let editingSource = $state<'reminders' | 'elapsed_reminders'>('reminders');
   let repeatEnabled = $state(false);
+  let usageInitialized = false;
   let settings = $state<Config | null>(null);
   let snoozeDuration = $state('1h');
   let editorDialog = $state<HTMLDialogElement>();
@@ -202,6 +203,7 @@
     toast = null;
     editing = index;
     editingSource = source;
+    usageInitialized = !!elapsed;
     repeatEnabled = !!elapsed?.repeat;
     draft = elapsed
       ? { kind: 'elapsed', app: elapsed.app, every: elapsed.after, repeat: elapsed.repeat || '30m', message: elapsed.message, disabled: elapsed.disabled }
@@ -216,6 +218,15 @@
       editorDialog.showModal();
       document.getElementById('message')?.focus();
     });
+  }
+  function selectReminderKind(kind: Draft['kind']) {
+    if (!draft) return;
+    if (kind === 'elapsed' && !usageInitialized) {
+      usageInitialized = true;
+      if (editing === null) draft.every = '10m';
+      if (!draft.message.trim()) draft.message = 'Still doing what you intended?';
+    }
+    draft.kind = kind;
   }
   function closeEditor() {
     const generation = ++editorGeneration;
@@ -454,20 +465,31 @@
     <section class="support"><h2>Support</h2><button class="button secondary" type="button" onclick={() => navigate('diagnostics')} disabled={insightsBusy}>Open diagnostics</button></section>
   {/if}
 
-  {#if draft}<dialog class="editor" bind:this={editorDialog} inert={!editorActive} aria-labelledby="editor-heading" oncancel={(event) => { event.preventDefault(); cancelEditor(); }} onclick={(event) => { if (editorDialog && event.target === editorDialog) { const rect = editorDialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) cancelEditor(); } }}><div class="editor-heading"><h2 id="editor-heading">{editing === null ? 'Add reminder' : 'Edit reminder'}</h2><button class="button quiet editor-close" type="button" onclick={cancelEditor} disabled={saving} aria-label="Close editor"><X size={18} aria-hidden="true" /></button></div>{#key editorSession}<form onsubmit={(event) => { event.preventDefault(); void saveReminder(); }}>
+  {#if draft}<dialog class="editor" class:usage-editor={draft.kind === 'elapsed'} bind:this={editorDialog} inert={!editorActive} aria-labelledby="editor-heading" oncancel={(event) => { event.preventDefault(); cancelEditor(); }} onclick={(event) => { if (editorDialog && event.target === editorDialog) { const rect = editorDialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) cancelEditor(); } }}><div class="editor-heading"><h2 id="editor-heading">{editing === null ? 'Add reminder' : 'Edit reminder'}</h2><button class="button quiet editor-close" type="button" onclick={cancelEditor} disabled={saving} aria-label="Close editor"><X size={18} aria-hidden="true" /></button></div>{#key editorSession}<form onsubmit={(event) => { event.preventDefault(); void saveReminder(); }}>
     {#if configError}<div class="feedback error" role="alert"><span>Could not save reminder: {configError}</span><button class="text-button" type="button" onclick={reloadConfig} disabled={saving}>Reload saved configuration</button></div>{/if}
-    <div class="editor-section"><span class="editor-number" aria-hidden="true">01</span><div><label for="message">What would you like to remember?</label><textarea id="message" bind:value={draft.message} rows="3" required placeholder="Take a break"></textarea></div></div>
-    <fieldset class="editor-types"><legend>When should it remind you?</legend>
-      <label><input type="radio" name="kind" value="every" bind:group={draft.kind} /> <span>Every so often<small>At a recurring interval, regardless of the app.</small></span></label>
-      <label><input type="radio" name="kind" value="watch" bind:group={draft.kind} /> <span>While using an app<small>On focus, then at intervals while it remains focused.</small></span></label>
-      <label><input type="radio" name="kind" value="elapsed" bind:group={draft.kind} /> <span>After time in an app<small>After an observed foreground session reaches a threshold.</small></span></label>
+    {#if draft.kind !== 'elapsed'}<div class="editor-section"><span class="editor-number" aria-hidden="true">01</span><div><label for="message">What would you like to remember?</label><textarea id="message" bind:value={draft.message} rows="3" required placeholder="Take a break"></textarea></div></div>{/if}
+    <fieldset class="editor-types"><legend>{draft.kind === 'elapsed' ? '01  Reminder type' : 'When should it remind you?'}</legend>
+      <label><input type="radio" name="kind" value="every" checked={draft.kind === 'every'} onchange={() => selectReminderKind('every')} /> <span>Every so often<small>At a recurring interval, regardless of the app.</small></span></label>
+      <label><input type="radio" name="kind" value="watch" checked={draft.kind === 'watch'} onchange={() => selectReminderKind('watch')} /> <span>While using an app<small>On focus, then at intervals while it remains focused.</small></span></label>
+      <label><input type="radio" name="kind" value="elapsed" checked={draft.kind === 'elapsed'} onchange={() => selectReminderKind('elapsed')} /> <span>Usage Breaker<small>After observed foreground time reaches a threshold.</small></span></label>
     </fieldset>
-    {#if draft.kind !== 'every'}
-      <div class="editor-section"><span class="editor-number" aria-hidden="true">02</span><div><label for="app-id">Application ID</label><input id="app-id" bind:value={draft.app} list="open-apps" required placeholder="e.g. firefox" /><datalist id="open-apps">{#each apps as app}<option value={app.id}>{app.name}</option>{/each}</datalist>{#if appsError}<p class="help">Open apps are unavailable. Enter an application ID.</p>{/if}</div></div>
-    {/if}
-    <div class="editor-section"><span class="editor-number" aria-hidden="true">03</span><div><label for="frequency">{draft.kind === 'elapsed' ? 'Observed focus threshold' : 'How often?'}</label><Interval id="frequency" bind:value={draft.every} /><p class="help">The shared cooldown and quiet hours can delay reminders.{draft.kind === 'elapsed' ? ' Focus is not verified active use.' : ''}</p></div></div>
     {#if draft.kind === 'elapsed'}
-      <div class="editor-section"><span class="editor-number" aria-hidden="true">04</span><div><label><input type="checkbox" bind:checked={repeatEnabled} /> Repeat after the first reminder</label>{#if repeatEnabled}<label for="repeat-frequency">Repeat interval</label><Interval id="repeat-frequency" bind:value={draft.repeat} />{/if}</div></div>
+      <div class="usage-layout">
+        <div class="usage-fields">
+          <div class="editor-section"><span class="editor-number" aria-hidden="true">02</span><div><label for="app-id">Application</label><input id="app-id" bind:value={draft.app} list="open-apps" required placeholder="e.g. brave" /><datalist id="open-apps">{#each apps as app}<option value={app.id}>{app.name}</option>{/each}</datalist><p class="help">{appsError ? 'Open apps are unavailable. Enter an application ID.' : draft.app ? appName(draft.app) : 'Enter a Niri application ID.'}</p></div></div>
+          <div class="editor-section"><span class="editor-number" aria-hidden="true">03</span><div><label for="frequency">Time threshold</label><Interval id="frequency" bind:value={draft.every} /><p class="help">Observed foreground time, not verified active input. Switching apps or uncertain focus resets the session.</p></div></div>
+          <div class="editor-section"><span class="editor-number" aria-hidden="true">04</span><div><label><input type="checkbox" bind:checked={repeatEnabled} /> Repeat after the first reminder</label><p class="help">One reminder per foreground session by default.</p>{#if repeatEnabled}<label for="repeat-frequency">Repeat interval</label><Interval id="repeat-frequency" bind:value={draft.repeat} />{/if}</div></div>
+          <div class="editor-section"><span class="editor-number" aria-hidden="true">05</span><div><label for="message">Message</label><textarea id="message" bind:value={draft.message} rows="3" required></textarea></div></div>
+        </div>
+        <aside class="usage-preview" aria-label="Notification preview">
+          <div><span class="editor-number">PREVIEW</span><h3>A gentle moment to check in</h3><p>Minimal notification · example at the threshold</p></div>
+          <div class="usage-preview-card"><span class="usage-preview-icon" aria-hidden="true"><Bell size={18} /></span><div><strong>{formatInterval(draft.every) || '10 minutes'} in {draft.app ? appName(draft.app) : 'your app'}</strong><p>{draft.message || 'Still doing what you intended?'}</p></div><X size={16} aria-hidden="true" /></div>
+          <p class="usage-preview-note">The delivered notification shows the actual observed duration. Native appearance depends on your desktop.</p>
+        </aside>
+      </div>
+    {:else}
+      {#if draft.kind === 'watch'}<div class="editor-section"><span class="editor-number" aria-hidden="true">02</span><div><label for="app-id">Application ID</label><input id="app-id" bind:value={draft.app} list="open-apps" required placeholder="e.g. firefox" /><datalist id="open-apps">{#each apps as app}<option value={app.id}>{app.name}</option>{/each}</datalist>{#if appsError}<p class="help">Open apps are unavailable. Enter an application ID.</p>{/if}</div></div>{/if}
+      <div class="editor-section"><span class="editor-number" aria-hidden="true">03</span><div><label for="frequency">How often?</label><Interval id="frequency" bind:value={draft.every} /><p class="help">The shared cooldown and quiet hours can delay reminders.</p></div></div>
     {/if}
     <div class="form-actions"><button class="button quiet" type="button" onclick={cancelEditor} disabled={saving}>Cancel</button><button class="button primary" type="submit" disabled={saving}>{saving ? 'Saving…' : editing === null ? 'Add reminder' : 'Save changes'}</button></div>
   </form>{/key}</dialog>{/if}
