@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +25,7 @@ func TestElapsedSessionThresholdRepeatAndContinuity(t *testing.T) {
 	if !session.due(rule) {
 		t.Fatal("threshold did not become due")
 	}
-	if got := elapsedMessage(rule, session.observed); got != "10 seconds in Brave. Still doing what you intended?" {
+	if got := elapsedTitle(rule, session.observed); got != "10 seconds in Brave" {
 		t.Fatalf("notification = %q", got)
 	}
 	session.sent, session.sentAt = true, session.observed
@@ -94,6 +96,25 @@ func TestElapsedSuppressionAndValidation(t *testing.T) {
 	var watch watchSession
 	if !watchReminderDue(Reminder{Kind: "watch", App: "brave", Every: "1h"}, "brave", time.Now(), &watch) {
 		t.Fatal("existing watch rule no longer fires immediately")
+	}
+}
+
+func TestElapsedNotificationUsesObservedDuration(t *testing.T) {
+	dir := t.TempDir()
+	output := filepath.Join(dir, "notification")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + output + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "notify-send"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	rule := ElapsedReminder{App: "brave", After: "20m", Message: "Still doing what you intended?"}
+	title := elapsedTitle(rule, 25*time.Minute)
+	if err := notify(title, rule.Message); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(output)
+	if err != nil || string(got) != "25 minutes in Brave\nStill doing what you intended?\n" {
+		t.Fatalf("native notification = %q, %v", got, err)
 	}
 }
 

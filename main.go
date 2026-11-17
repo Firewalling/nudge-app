@@ -146,20 +146,20 @@ func watchReminderDue(r Reminder, app string, now time.Time, s *watchSession) bo
 	d, e := duration(r.Every)
 	return e == nil && now.Sub(s.lastSent) >= d
 }
-func notify(m string) error {
+func notify(title, m string) error {
 	if _, e := exec.LookPath("notify-send"); e != nil {
 		return fmt.Errorf("notify-send is required: %w", e)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if e := exec.CommandContext(ctx, "notify-send", "Nudge", m).Run(); e != nil {
+	if e := exec.CommandContext(ctx, "notify-send", title, m).Run(); e != nil {
 		return fmt.Errorf("send desktop notification: %w", e)
 	}
 	return nil
 }
 
 func deliverReminder(runtime *schedulerState, foreground bool, title, body, native string) error {
-	return runtime.toasts.deliver(foreground, title, body, native, 2*time.Second, notify)
+	return runtime.toasts.deliver(foreground, title, body, native, 2*time.Second, func(nativeTitle string) error { return notify(nativeTitle, body) })
 }
 func parseFocusedWindow(raw []byte) (focusedWindowInfo, bool, error) {
 	if strings.TrimSpace(string(raw)) == "null" {
@@ -244,6 +244,9 @@ func runDaemon() error {
 		case <-t.C:
 		case <-wake:
 		}
+		if err := runtime.toasts.expire(time.Now()); err != nil {
+			fmt.Fprintf(os.Stderr, "nudge: %v\n", err)
+		}
 		unlock, err := lockConfig()
 		if err != nil {
 			runtime.fail(err)
@@ -325,7 +328,7 @@ func runDaemon() error {
 			}
 			delete(suppressed, i)
 			foreground := validFocus && strings.EqualFold(app.AppID, "org.wails.nudge") && connected.Load() && focusGeneration.Load() == generation
-			err := deliverReminder(runtime, foreground, "Nudge reminder", r.Message, r.Message)
+			err := deliverReminder(runtime, foreground, "Nudge reminder", r.Message, "Nudge")
 			if errors.Is(err, errToastBusy) {
 				continue
 			}
@@ -360,7 +363,8 @@ func runDaemon() error {
 			session.observe(now, app.AppID, rule.App, validFocus, generation)
 			if session.eligible(rule, paused, quiet, allowed) && connected.Load() && focusGeneration.Load() == generation {
 				foreground := strings.EqualFold(app.AppID, "org.wails.nudge")
-				err := deliverReminder(runtime, foreground, elapsedTitle(rule, session.observed), rule.Message, elapsedMessage(rule, session.observed))
+				title := elapsedTitle(rule, session.observed)
+				err := deliverReminder(runtime, foreground, title, rule.Message, title)
 				if errors.Is(err, errToastBusy) {
 					elapsedSessions[i] = session
 					continue
@@ -447,7 +451,7 @@ func run(a []string) error {
 		if len(a) < 2 {
 			return errors.New("usage: nudge now MESSAGE")
 		}
-		err := notify(strings.Join(a[1:], " "))
+		err := notify("Nudge", strings.Join(a[1:], " "))
 		kind := "attempt"
 		if err != nil {
 			kind = "failure"

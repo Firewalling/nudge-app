@@ -298,6 +298,10 @@ func handler(states ...*schedulerState) http.Handler {
 		hub := &states[0].toasts
 		switch request.Action {
 		case "poll":
+			if err := hub.expire(time.Now()); err != nil {
+				apiError(w, http.StatusServiceUnavailable, "native reminder delivery failed")
+				return
+			}
 			jsonResponse(w, http.StatusOK, map[string]any{"toast": hub.poll(time.Now())})
 		case "claim":
 			focused, found, err := focusedWindow()

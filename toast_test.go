@@ -25,7 +25,8 @@ func TestToastDeliveryClaimAndNativeFallback(t *testing.T) {
 
 	hub.poll(time.Now())
 	done := make(chan error, 1)
-	go func() { done <- hub.deliver(true, "20 minutes in Brave", "Check in", "Native", time.Second, send) }()
+	rule := ElapsedReminder{App: "brave", After: "20m", Message: "Still doing what you intended?"}
+	go func() { done <- hub.deliver(true, elapsedTitle(rule, 25*time.Minute), rule.Message, "Native", time.Second, send) }()
 	deadline := time.After(time.Second)
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
@@ -38,7 +39,7 @@ func TestToastDeliveryClaimAndNativeFallback(t *testing.T) {
 			offer = hub.poll(time.Now())
 		}
 	}
-	if offer.Title != "20 minutes in Brave" || offer.Body != "Check in" || offer.Accepted {
+	if offer.Title != "25 minutes in Brave" || offer.Body != "Still doing what you intended?" || offer.Accepted {
 		t.Fatalf("unexpected offer: %+v", offer)
 	}
 	if !hub.claim(offer.ID) || hub.claim(offer.ID) {
@@ -76,6 +77,52 @@ func TestToastDeliveryClaimAndNativeFallback(t *testing.T) {
 	}
 	if hub.claim(offer.ID+1) || hub.poll(time.Now()) != nil {
 		t.Fatal("expired offer could still be claimed")
+	}
+}
+
+func TestToastOwnershipExpiresAndReconnects(t *testing.T) {
+	var hub toastHub
+	native := make(chan string, 2)
+	send := func(message string) error { native <- message; return nil }
+	now := time.Now()
+	hub.poll(now)
+	done := make(chan error, 1)
+	go func() { done <- hub.deliver(true, "Title", "Body", "Native", time.Second, send) }()
+	var offer *toastView
+	for deadline := time.Now().Add(time.Second); offer == nil && time.Now().Before(deadline); {
+		offer = hub.poll(now)
+		time.Sleep(time.Millisecond)
+	}
+	if offer == nil || !hub.claim(offer.ID) {
+		t.Fatal("could not claim reminder")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.expire(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-native:
+		t.Fatal("live ownership expired early")
+	default:
+	}
+	if err := hub.expire(now.Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-native; got != "Native" {
+		t.Fatalf("expired reminder = %q", got)
+	}
+	if err := hub.expire(now.Add(4 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-native:
+		t.Fatalf("duplicate native reminder: %q", got)
+	default:
+	}
+	if hub.dismiss(offer.ID) || hub.poll(time.Now()) != nil {
+		t.Fatal("expired ownership survived reconnection")
 	}
 }
 
@@ -117,6 +164,7 @@ func TestToastClaimRequiresFocusedDesktop(t *testing.T) {
 		}
 	}
 	state := &schedulerState{}
+	state.toasts.activeUntil = time.Now().Add(time.Second)
 	state.toasts.current = &toastOffer{ID: 1, claimed: make(chan struct{})}
 	h := handler(state)
 	claim := func() int {
@@ -133,6 +181,11 @@ func TestToastClaimRequiresFocusedDesktop(t *testing.T) {
 		t.Fatalf("background claim: status %d", got)
 	}
 	setFocus("org.wails.nudge")
+	state.toasts.activeUntil = time.Now().Add(-time.Second)
+	if got := claim(); got != http.StatusConflict || state.toasts.current.Accepted {
+		t.Fatalf("expired claim: status %d", got)
+	}
+	state.toasts.activeUntil = time.Now().Add(time.Second)
 	if got := claim(); got != http.StatusOK || !state.toasts.current.Accepted {
 		t.Fatalf("foreground claim: status %d", got)
 	}

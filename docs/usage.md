@@ -40,7 +40,7 @@ If Nudge cannot detect the focused app while an app-specific reminder is enabled
 
 Use **Pause reminders** beside the status to choose a duration; **Resume reminders** ends the pause early. Escape closes the pause menu and returns focus to its control.
 
-When the desktop window is focused, Nudge can show one persistent in-app reminder. **Snooze 5 min** pauses all reminders for five minutes; **Dismiss** clears that reminder. Further foreground reminders wait until the current one is handled. If the window is closed, backgrounded, disconnected or cannot claim the reminder, the daemon uses a native desktop notification instead.
+When the desktop window is focused, Nudge can show one persistent in-app reminder. **Snooze 5 min** pauses all reminders for five minutes; **Dismiss** clears that reminder. Further foreground reminders wait until the current one is handled. While the editor is open, or if the window is closed, backgrounded, disconnected or cannot claim the reminder, the daemon uses a native desktop notification instead. An in-app reminder abandoned when the window becomes unavailable is transferred to native notification after the desktop heartbeat expires.
 
 A reminder has `kind` (`every` or `watch`), positive duration `every`, and `message`; `watch` also needs an `app` ID. `disabled: true` skips a rule. `cooldown` is a positive duration shared by scheduled notifications. Optional `quiet_start` and `quiet_end` must both be set to different local times in `HH:MM` format; the interval may cross midnight. API validation permits up to 500 rules and messages of 1–4096 bytes with non-whitespace content. `paused_until`, `last_notification`, and each rule's `last` are state maintained by Nudge. Use the dashboard to edit and remove rules, cooldown and quiet hours.
 
@@ -58,7 +58,7 @@ Elapsed-session reminders are configured separately from watched rules in the JS
 }
 ```
 
-`after` is the first threshold; omit `repeat` for one notification per session, or set it to a positive duration for further notifications. Set `disabled` to `true` to turn a rule off. The dashboard can create and edit these rules alongside periodic and watched reminders. The daemon counts only short, consistent Niri focus observations and resets when focus changes, the stream disconnects, or observations have an uncertain gap. Pause, snooze, quiet hours and the shared cooldown suppress delivery. The elapsed timer is in memory and does not require Insights history.
+`after` is the first threshold; omit `repeat` for one notification per session, or set it to a positive duration for further notifications. Set `disabled` to `true` to turn a rule off. The dashboard can create and edit these rules alongside periodic and watched reminders. The daemon counts only short, consistent Niri focus observations and resets when focus changes, the stream disconnects, or observations have an uncertain gap. The notification title shows the measured observed duration and app name, not the configured threshold. Pause, snooze, quiet hours and the shared cooldown suppress delivery. The elapsed timer is in memory and does not require Insights history.
 
 Nudge does not currently have a reliable idle-input source: uninterrupted observed focus can include time away from the computer. The duration is observed foreground time, not verified active use. Long sleeps, delayed observations, clock drift or connection loss reset the session instead of filling the gap. The dashboard's next-reminder estimate does not include elapsed rules.
 

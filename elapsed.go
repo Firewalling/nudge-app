@@ -67,7 +67,3 @@ func elapsedTitle(rule ElapsedReminder, observed time.Duration) string {
 	}
 	return fmt.Sprintf("%d %s in %s", amount, unit, appName(rule.App))
 }
-
-func elapsedMessage(rule ElapsedReminder, observed time.Duration) string {
-	return elapsedTitle(rule, observed) + ". " + rule.Message
-}

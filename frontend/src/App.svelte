@@ -116,22 +116,26 @@
       'accepted' in value && typeof value.accepted === 'boolean';
   }
   async function pollToast() {
-    if (toastPolling || document.hidden || !document.hasFocus()) return;
+    if (toastPolling || editorActive || document.hidden || !document.hasFocus()) return;
     toastPolling = true;
     const epoch = toastEpoch;
     try {
       const result = await request<{ toast: unknown }>('toast', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'poll' }) });
-      if (epoch !== toastEpoch || !isReminderToast(result.toast) || toast?.id === result.toast.id || toast) return;
+      if (epoch !== toastEpoch || editorActive || document.hidden || !document.hasFocus()) return;
+      if (!isReminderToast(result.toast)) { toast = null; return; }
+      if (toast?.id === result.toast.id) return;
+      if (toast) toast = null;
       if (!result.toast.accepted) {
-        if (document.hidden || !document.hasFocus()) return;
+        if (editorActive || document.hidden || !document.hasFocus()) return;
         await request('toast', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'claim', id: result.toast.id }) });
       }
-      if (epoch === toastEpoch) {
+      if (epoch === toastEpoch && !editorActive && !document.hidden && document.hasFocus()) {
         toast = result.toast;
         toastSnoozed = false;
         toastError = '';
       }
     } catch {
+      toast = null;
       // The daemon falls back to a native notification if an offer is not claimed.
     } finally {
       toastPolling = false;
@@ -167,9 +171,11 @@
     void (async () => { await Promise.all([loadStatus(), loadConfig(), loadApps(), loadDiagnostics()]); loading = false; })();
     const timer = window.setInterval(() => { if (!document.hidden) void loadStatus(); }, 15000);
     const toastTimer = import.meta.env.VITE_NUDGE_DESKTOP === '1' ? window.setInterval(() => { void pollToast(); }, 750) : undefined;
+    const releaseToast = () => { toastEpoch++; toast = null; };
+    window.addEventListener('blur', releaseToast);
     const beforeUnload = (event: BeforeUnloadEvent) => { if (dirty || saving || insightsDirty || insightsBusy) { event.preventDefault(); event.returnValue = ''; } };
     window.addEventListener('beforeunload', beforeUnload);
-    return () => { window.clearInterval(timer); if (toastTimer !== undefined) window.clearInterval(toastTimer); window.removeEventListener('beforeunload', beforeUnload); };
+    return () => { window.clearInterval(timer); if (toastTimer !== undefined) window.clearInterval(toastTimer); window.removeEventListener('beforeunload', beforeUnload); window.removeEventListener('blur', releaseToast); };
   });
   async function saveConfig(next: Config, keys = reminderKeys): Promise<boolean> {
     if (!revision) { configError = 'Configuration revision is missing. Reload before saving.'; return false; }
@@ -192,6 +198,8 @@
     const generation = ++editorGeneration;
     ++editorSession;
     editorActive = true;
+    toastEpoch++;
+    toast = null;
     editing = index;
     editingSource = source;
     repeatEnabled = !!elapsed?.repeat;

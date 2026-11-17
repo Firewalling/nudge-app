@@ -25,6 +25,8 @@ type toastOffer struct {
 	Body     string `json:"body"`
 	Accepted bool   `json:"accepted"`
 	claimed  chan struct{}
+	native   string
+	send     func(string) error
 }
 
 type toastView struct {
@@ -44,10 +46,23 @@ func (h *toastHub) poll(now time.Time) *toastView {
 	return &toastView{ID: h.current.ID, Title: h.current.Title, Body: h.current.Body, Accepted: h.current.Accepted}
 }
 
+// expire transfers an abandoned accepted reminder to native delivery once.
+func (h *toastHub) expire(now time.Time) error {
+	h.mu.Lock()
+	offer := h.current
+	if offer == nil || !offer.Accepted || now.Before(h.activeUntil) {
+		h.mu.Unlock()
+		return nil
+	}
+	h.current = nil
+	h.mu.Unlock()
+	return offer.send(offer.native)
+}
+
 func (h *toastHub) claim(id uint64) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.current == nil || h.current.ID != id || h.current.Accepted {
+	if h.current == nil || h.current.ID != id || h.current.Accepted || !time.Now().Before(h.activeUntil) {
 		return false
 	}
 	h.current.Accepted = true
@@ -74,13 +89,13 @@ func (h *toastHub) deliver(foreground bool, title, body, native string, wait tim
 			return errToastBusy
 		}
 	}
-	if foreground && h.offer(title, body, wait) {
+	if foreground && h.offer(title, body, native, wait, send) {
 		return nil
 	}
 	return send(native)
 }
 
-func (h *toastHub) offer(title, body string, wait time.Duration) bool {
+func (h *toastHub) offer(title, body, native string, wait time.Duration, send func(string) error) bool {
 	h.mu.Lock()
 	if h.current != nil || !time.Now().Before(h.activeUntil) {
 		h.mu.Unlock()
@@ -96,7 +111,7 @@ func (h *toastHub) offer(title, body string, wait time.Duration) bool {
 		h.nextID = binary.LittleEndian.Uint64(seed[:]) & ((1 << 52) - 1)
 	}
 	h.nextID++
-	offer := &toastOffer{ID: h.nextID, Title: title, Body: body, claimed: make(chan struct{})}
+	offer := &toastOffer{ID: h.nextID, Title: title, Body: body, claimed: make(chan struct{}), native: native, send: send}
 	h.current = offer
 	h.mu.Unlock()
 
